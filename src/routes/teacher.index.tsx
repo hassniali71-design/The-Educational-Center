@@ -27,6 +27,7 @@ import { useCurrentTeacher } from "@/hooks/use-current-teacher";
 import {
   classifyStudent,
   classificationReason,
+  getAbsentTodayCountForTeacher,
   getActiveSubjectQuote,
   getEnrolledCount,
   getEventsForTeacherToday,
@@ -60,7 +61,7 @@ export const Route = createFileRoute("/teacher/")({
 
 function TeacherHome() {
   const state = useDataStore();
-  const { attendanceRecords, subjects } = state;
+  const { subjects } = state;
   const isHydrated = useIsHydrated();
   const teacher = useCurrentTeacher();
   /**
@@ -91,11 +92,8 @@ function TeacherHome() {
   const theme = getSubjectTheme(subject?.theme_key);
   const timerCompliance = getTimerCompliance(state, teacher.id);
 
-  const myGroupNames = new Set(myGroups.map((g) => g.name));
   const sessionsThisWeek = state.scheduleSlots.filter((s) => s.teacher_id === teacher.id).length;
-  const absentLastSession = attendanceRecords.filter(
-    (a) => myGroupNames.has(a.group_name) && a.status === "absent",
-  ).length;
+  const absentToday = getAbsentTodayCountForTeacher(state, teacher.id);
   const committed = myStudents.filter((s) => s.attendance_rate >= 90).length;
   const excellent = myStudents.filter((s) => classifyStudent(s) === "excellent").length;
   const needsAttention = myStudents.filter((s) => classifyStudent(s) === "needs_attention");
@@ -139,8 +137,8 @@ function TeacherHome() {
           tone="success"
         />
         <StatCard
-          label="الطلاب الغائبون (آخر حصة)"
-          value={formatNumber(absentLastSession)}
+          label="الطلاب الغائبون اليوم"
+          value={formatNumber(absentToday)}
           icon={UserX}
           tone="destructive"
         />

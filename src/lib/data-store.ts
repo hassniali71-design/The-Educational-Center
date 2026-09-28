@@ -4266,6 +4266,24 @@ export function getEventsForTeacherToday(
   return events;
 }
 
+/**
+ * عدد طلاب المدرس الغائبين اليوم — كان محسوباً في teacher.index.tsx بمطابقة
+ * `attendanceRecords` بـ `group_name` نصياً وبلا أي فلتر تاريخ إطلاقاً (يجمع
+ * غياب كل التاريخ لأي مجموعة بنفس الاسم، مش "آخر حصة" كما يوحي عنوان الكارت،
+ * ومعرّض لتصادم الاسم مع مجموعة مدرس تاني). هنا: نفس الروستر الحقيقي
+ * (getStudentsForTeacher) + فلتر اليوم الفعلي فقط.
+ */
+export function getAbsentTodayCountForTeacher(
+  state: DataState,
+  teacherId: string,
+  now: Date = new Date(),
+): number {
+  const myStudentIds = new Set(getStudentsForTeacher(state, teacherId).map((s) => s.id));
+  return state.attendanceRecords.filter(
+    (a) => myStudentIds.has(a.student_id) && a.status === "absent" && sameDay(a.checked_in_at, now),
+  ).length;
+}
+
 const TYPE_LABEL_AR: Record<TeacherLaunch["launch_type"], string> = {
   homework: "واجب بيتي",
   homework_with_correction: "واجب مع تصحيح",

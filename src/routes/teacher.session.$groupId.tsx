@@ -514,11 +514,7 @@ function SessionMode() {
 
             {activeSection === "attendance" ? (
               <div className="grid gap-4 xl:grid-cols-2">
-                <AttendanceRosterBox
-                  groupId={group.id}
-                  editable
-                  sessionId={sessionIdRef.current}
-                />
+                <AttendanceRosterBox groupId={group.id} />
                 <OwnerNotesCard audience="teacher" />
               </div>
             ) : null}

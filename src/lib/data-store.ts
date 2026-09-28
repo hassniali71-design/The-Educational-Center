@@ -1741,58 +1741,6 @@ export function getAttendanceForSession(
   );
 }
 
-/**
- * §18-3: retroactive per-cell edit for the attendance grid (student × past session) —
- * upserts by (student, session), unlike `recordAttendance`'s append-only live check-in
- * log. Calling it again for the same cell corrects it in place.
- */
-export function updateAttendanceForSession(
-  studentId: string,
-  sessionId: string,
-  status: AttendanceStatus,
-) {
-  let record: AttendanceRecord | null = null;
-  update((state) => {
-    const student = findStudentById(state, studentId);
-    if (!student) return state;
-    const existing = getAttendanceForSession(state, studentId, sessionId);
-    record = {
-      id: existing?.id ?? `at-${Date.now()}`,
-      center_id: student.center_id,
-      student_id: student.id,
-      student_name: student.full_name,
-      group_name: student.group_name,
-      status,
-      checked_in_at: existing?.checked_in_at ?? (status === "absent" ? "—" : new Date().toISOString()),
-      method: existing?.method ?? "manual",
-      session_id: sessionId,
-    };
-    const attendanceRecords = existing
-      ? state.attendanceRecords.map((a) => (a.id === existing.id ? record! : a))
-      : [record, ...state.attendanceRecords];
-    return { ...state, attendanceRecords };
-  });
-  if (record) {
-    const r = record as AttendanceRecord;
-    syncUpsert("attendance_records", r);
-    logActivity(
-      "attendance",
-      `${r.status === "absent" ? "غياب" : r.status === "late" ? "تأخير" : "حضور"}: ${r.student_name}`,
-      r.group_name,
-      r.student_name,
-      null,
-    );
-    if (r.status !== "present") {
-      pushNotification(
-        r.status === "absent" ? "absence" : "late",
-        r.status === "absent" ? "critical" : "warning",
-        r.status === "absent" ? `غياب: ${r.student_name}` : `تأخير: ${r.student_name}`,
-        r.group_name,
-      );
-    }
-  }
-}
-
 export function recordPayment(
   studentCode: string,
   amount: number,

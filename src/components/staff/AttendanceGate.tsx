@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { Panel, StatusBadge } from "@/components/dashboard/StatCard";
 import { AppShell } from "@/components/layout/AppShell";
 import { DailyStaffEvents } from "@/components/staff/DailyStaffEvents";
-import { markAttendanceForGroup, useDataStore } from "@/lib/data-store";
+import { getStudentsForGroup, markAttendanceForGroup, useDataStore } from "@/lib/data-store";
 import { formatDateTime, formatNumber, formatPercent } from "@/lib/format";
 import { buildActiveGroupsNow } from "@/lib/owner-metrics";
 import { cn } from "@/lib/utils";
@@ -416,10 +416,9 @@ function FullLogPanel({ title, emptyText, filterFn, countFn, topCount }: FullLog
 }
 
 function GroupAttendanceModal({ group, onClose }: { group: Group; onClose: () => void }) {
-  const { students, attendanceRecords } = useDataStore();
-  const groupStudents = students.filter(
-    (s) => s.group_id === group.id || s.group_name === group.name,
-  );
+  const state = useDataStore();
+  const { attendanceRecords } = state;
+  const groupStudents = getStudentsForGroup(state, group.id);
   const today = new Date();
   const todayMap = new Map<string, "present" | "late" | "absent">();
   attendanceRecords.forEach((r) => {

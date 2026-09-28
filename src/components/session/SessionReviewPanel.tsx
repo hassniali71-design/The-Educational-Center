@@ -5,7 +5,6 @@ import {
   ATTENDANCE_STATUS_META,
   BehaviorButtons,
   MiniScoreButtons,
-  nextAttendanceStatus,
 } from "@/components/session/SessionSteps";
 import { StatusBadge } from "@/components/dashboard/StatCard";
 import { formatNumber } from "@/lib/format";
@@ -13,7 +12,6 @@ import {
   getAssessmentScoresForLesson,
   getAttendanceForSession,
   recordAssessmentScore,
-  updateAttendanceForSession,
   type DataState,
 } from "@/lib/data-store";
 import { cn } from "@/lib/utils";
@@ -72,16 +70,11 @@ export function SessionReviewPanel({
     toast.success("تم تحديث الدرجة");
   };
 
-  const setAttendance = (studentId: string, current: AttendanceStatus | undefined) => {
-    updateAttendanceForSession(studentId, sessionRecord.id, nextAttendanceStatus(current));
-    toast.success("تم تحديث الحضور");
-  };
-
   return (
     <div className="space-y-6">
       <div className="rounded-xl border-2 border-dashed border-border p-4 text-center text-xs font-bold text-muted-foreground">
-        وضع مراجعة — هذا الدرس تم تدريسه بتاريخ {sessionRecord.date}. أي تعديل هنا يُحفظ فوراً
-        بأثر رجعي.
+        وضع مراجعة — هذا الدرس تم تدريسه بتاريخ {sessionRecord.date}. تعديل الدرجات هنا يُحفظ
+        فوراً بأثر رجعي. الحضور يسجّله الموظف فقط ويظهر هنا للاطّلاع.
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -125,11 +118,7 @@ export function SessionReviewPanel({
                 <tr key={s.id} className="border-b border-border last:border-0">
                   <td className="py-2 font-black text-foreground">{s.full_name}</td>
                   <td className="py-2">
-                    <button
-                      type="button"
-                      onClick={() => setAttendance(s.id, attendance?.status)}
-                      className="flex items-center gap-1.5"
-                    >
+                    <div className="flex items-center gap-1.5">
                       {meta && Icon ? (
                         <StatusBadge tone={meta.tone}>
                           <Icon className="size-3.5" /> {meta.text}
@@ -137,7 +126,7 @@ export function SessionReviewPanel({
                       ) : (
                         <StatusBadge tone="neutral">لم يُسجَّل</StatusBadge>
                       )}
-                    </button>
+                    </div>
                   </td>
                   <td className={cn("py-2")}>
                     <MiniScoreButtons

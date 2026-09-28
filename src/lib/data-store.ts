@@ -1181,14 +1181,26 @@ export function getCurriculumProgress(
   return { subject, unitCount, lessonCount, doneCount, inProgressCount, nextLesson };
 }
 
-/** The current (general, not tied to one past session) score for a student in a category — §8. */
+/**
+ * The current (general, not tied to one past session) score for a student in a
+ * category — §8. **يجب تمرير `teacherId`**: بدونه كان بيرجّع أول تقييم لنفس الطالب
+ * بنفس الفئة بغضّ النظر مين سجّله — يعني تقييم "واجب" سجّلته مس شيماء (عربي) كان
+ * بيظهر فى شاشة مس فاطمة (إنجليزي) لنفس الطالب المشترك بينهم، وكأنه صادر منها.
+ * الفلترة بـ`recorded_by_teacher_id` (مُسجَّل فعلياً فى `recordAssessmentScore`)
+ * تضمن عزل حقيقي: كل مدرس يشوف بس التقييمات اللي هو سجّلها بنفسه.
+ */
 export function getAssessmentScore(
   state: DataState,
   studentId: string,
   category: AssessmentScore["category"],
+  teacherId: string,
 ): AssessmentScore | undefined {
   return state.assessmentScores.find(
-    (a) => a.student_id === studentId && a.category === category && a.session_id === null,
+    (a) =>
+      a.student_id === studentId &&
+      a.category === category &&
+      a.session_id === null &&
+      a.recorded_by_teacher_id === teacherId,
   );
 }
 
@@ -1243,9 +1255,13 @@ const WEAK_POINT_CATEGORIES: { label: string; category: AssessmentScore["categor
  * no recorded score yet is excluded rather than treated as 0 — missing data
  * isn't the same as a weak result.
  */
-export function diagnoseWeakPoint(state: DataState, studentId: string): WeakPointDiagnosis {
+export function diagnoseWeakPoint(
+  state: DataState,
+  studentId: string,
+  teacherId: string,
+): WeakPointDiagnosis {
   const components = WEAK_POINT_CATEGORIES.map(({ label, category }) => {
-    const score = getAssessmentScore(state, studentId, category);
+    const score = getAssessmentScore(state, studentId, category, teacherId);
     return score ? { label, value: Math.round((score.value / score.max_value) * 100) } : null;
   }).filter((c): c is { label: string; value: number } => c !== null);
 

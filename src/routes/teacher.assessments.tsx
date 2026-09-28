@@ -88,7 +88,7 @@ function AssessmentsPage() {
   const selectedGroup: Group | null = groupFilter === ALL ? null : (visibleGroups[0] ?? null);
 
   const scoreOf = (studentId: string, category: "homework" | "activity" | "behavior") =>
-    getAssessmentScore(state, studentId, category);
+    getAssessmentScore(state, studentId, category, teacher.id);
 
   const excellent = visibleStudents.filter((s) => classifyStudent(s) === "excellent");
   const needsAttention = visibleStudents.filter((s) => classifyStudent(s) === "needs_attention");

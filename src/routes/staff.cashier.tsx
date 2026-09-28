@@ -1,18 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
-import { Banknote, CheckCircle2, Clock, CreditCard, Download, Play, Plus, Receipt, Search, Smartphone } from "lucide-react";
+import { Banknote, CreditCard, Download, Plus, Receipt, Search, Smartphone } from "lucide-react";
 import { toast } from "sonner";
 
 import { Panel, StatCard, StatusBadge } from "@/components/dashboard/StatCard";
 import { AppShell } from "@/components/layout/AppShell";
 import { formatCurrency, formatNumber } from "@/lib/format";
-import {
-  getUpcomingGroupsForToday,
-  recordPayment,
-  startGroupSession,
-  sumSubjectFees,
-  useDataStore,
-} from "@/lib/data-store";
+import { recordPayment, sumSubjectFees, useDataStore } from "@/lib/data-store";
 import { cn } from "@/lib/utils";
 import type { PaymentMethod, Student } from "@/types";
 
@@ -233,12 +227,6 @@ function CashierPage() {
         <StatCard label="متوسط قيمة العملية" value={formatCurrency(todayAvg)} icon={Receipt} />
         <StatCard label="عدد عمليات اليوم" value={formatNumber(todayCount)} icon={Receipt} />
       </div>
-
-      {/*
-        Migration 0023 / خطة C (C14): بوكس "المجموعات النشطة الآن" — الموظف
-        يضغط "بدأت الحصة" لتسجيل الحضور دفعة واحدة (يوقف عداد التأخير).
-      */}
-      <UpcomingGroupsPanel />
 
       <Panel
         title="شبكة التحصيل — كل الطلاب"
@@ -519,92 +507,3 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
-/* ---------------- Migration 0023 / خطة C (C14): مجموعات اليوم النشطة ---------------- */
-
-function UpcomingGroupsPanel() {
-  const state = useDataStore();
-  const upcoming = useMemo(
-    () => getUpcomingGroupsForToday(state),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [state.scheduleSlots, state.groups, state.teachers, state.attendanceRecords],
-  );
-  const now = upcoming.filter((u) => u.status === "now");
-  const today = upcoming.filter((u) => u.status === "today");
-  if (upcoming.length === 0) return null;
-
-  return (
-    <Panel
-      title="مجموعات اليوم"
-      description="حصص اليوم مرتّبة بالأقرب — اضغط «بدأت الحصة» لتسجيل الحضور دفعة واحدة"
-    >
-      <div className="space-y-2">
-        {[...now, ...today].map((u) => {
-          const tone =
-            u.status === "now"
-              ? "border-success/40 bg-success/5"
-              : "border-border bg-background";
-          return (
-            <div
-              key={u.group.id}
-              className={cn(
-                "flex flex-wrap items-center justify-between gap-2 rounded-xl border-2 p-3",
-                tone,
-              )}
-            >
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-2">
-                  <StatusBadge tone={u.status === "now" ? "success" : "primary"}>
-                    {u.status === "now" ? "الحين" : "اليوم"}
-                  </StatusBadge>
-                  <p className="text-sm font-black text-foreground">{u.group.name}</p>
-                  <p className="text-xs font-bold text-muted-foreground">
-                    {u.group.grade} · قاعة {u.slotRoom}
-                  </p>
-                </div>
-                <p className="mt-1 text-[11px] font-bold text-muted-foreground">
-                  المدرس: {u.teacher?.full_name ?? u.group.teacher_name} · {u.slotWeekday} {u.slotTime}
-                  {u.attendanceMarkedToday > 0
-                    ? ` · ${formatNumber(u.attendanceMarkedToday)} حضور`
-                    : ""}
-                </p>
-                {u.status === "now" ? (
-                  <p className="mt-1 flex items-center gap-1 text-[11px] font-black text-success">
-                    <Clock className="size-3" /> وقت الحصة — الحضور مفتوح
-                  </p>
-                ) : u.minutesUntil > 0 ? (
-                  <p className="mt-1 text-[11px] font-bold text-muted-foreground">
-                    بعد {formatNumber(u.minutesUntil)} دقيقة
-                  </p>
-                ) : null}
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  const result = startGroupSession(u.group.id);
-                  if (result.marked === 0) {
-                    toast.info(`كل طلاب ${u.group.name} حضورهم مسجَّل بالفعل`);
-                  } else {
-                    toast.success(
-                      `بدأت حصة ${u.group.name} — تم تسجيل ${result.marked} طالب`,
-                    );
-                  }
-                }}
-                className="flex items-center gap-1.5 rounded-xl bg-navy px-3 py-2 text-xs font-black text-navy-foreground hover:opacity-90"
-              >
-                {u.attendanceMarkedToday > 0 ? (
-                  <>
-                    <CheckCircle2 className="size-3.5" /> تحديث الحضور
-                  </>
-                ) : (
-                  <>
-                    <Play className="size-3.5" /> بدأت الحصة
-                  </>
-                )}
-              </button>
-            </div>
-          );
-        })}
-      </div>
-    </Panel>
-  );
-}

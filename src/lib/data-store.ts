@@ -2626,7 +2626,7 @@ export function releaseSessionTasks(groupId: string) {
   update((state) => {
     const group = state.groups.find((g) => g.id === groupId);
     if (!group) return state;
-    const members = state.students.filter((s) => s.group_name === group.name);
+    const members = getStudentsForGroup(state, groupId);
     const stamp = Date.now();
 
     tasks = members.map((s, i) => ({
@@ -4229,7 +4229,10 @@ export function getTeacherBehaviorAverage(
   let count = 0;
   for (const s of students) {
     const scores = state.assessmentScores.filter(
-      (a) => a.student_id === s.id && a.category === "behavior",
+      (a) =>
+        a.student_id === s.id &&
+        a.category === "behavior" &&
+        a.recorded_by_teacher_id === teacherId,
     );
     for (const sc of scores) {
       if (sc.max_value <= 0) continue;

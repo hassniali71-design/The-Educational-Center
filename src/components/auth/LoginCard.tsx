@@ -1,10 +1,10 @@
 import { useNavigate } from "@tanstack/react-router";
 import { GraduationCap, LogIn, ShieldCheck } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { ROLES, ROLE_ORDER } from "@/config/roles";
-import { signIn } from "@/lib/auth";
+import { getSession, signIn } from "@/lib/auth";
 import { DEFAULT_TENANT_ACCENT, getTenantPaletteVars } from "@/lib/tenant-colors";
 import type { UserRole } from "@/types";
 
@@ -47,6 +47,27 @@ export function LoginCard({
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [checkingSession, setCheckingSession] = useState(true);
+
+  /**
+   * الجذر الحقيقي لشكوى "لازم أسجل دخول كل مرة": الجلسة كانت بالفعل محفوظة
+   * بدون انتهاء صلاحية في localStorage (auth.ts)، لكن صفحة الدخول نفسها كانت
+   * دايماً بترسم الفورم من غير ما تتحقق أصلاً لو فيه جلسة محفوظة سليمة. أي حد
+   * يفتح رابط الدخول تاني (حتى لو نفس الجهاز، نفس اليوزر) كان يضطر يكتب بياناته
+   * من الأول في كل مرة. الحل من جذوره هنا: تحقق مرة واحدة عند فتح الصفحة، ولو
+   * فيه جلسة، ادخل على طول بدون ما تعرض الفورم إطلاقاً.
+   */
+  useEffect(() => {
+    const existing = getSession();
+    if (existing) {
+      void navigate({
+        to: existing.isPlatformAdmin ? "/platform/new-center" : ROLES[existing.role].home,
+        replace: true,
+      });
+      return;
+    }
+    setCheckingSession(false);
+  }, [navigate]);
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -71,6 +92,14 @@ export function LoginCard({
     } finally {
       setSubmitting(false);
     }
+  }
+
+  if (checkingSession) {
+    return (
+      <div dir="rtl" className="flex min-h-screen items-center justify-center bg-canvas">
+        <p className="text-base font-black text-muted-foreground">جارٍ التحقق من الجلسة…</p>
+      </div>
+    );
   }
 
   return (

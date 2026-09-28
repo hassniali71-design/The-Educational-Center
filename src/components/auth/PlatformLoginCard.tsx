@@ -1,10 +1,11 @@
 import { useNavigate } from "@tanstack/react-router";
 import { LogIn, ShieldCheck } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { BrandLogo } from "@/components/BrandLogo";
-import { signIn, signOut } from "@/lib/auth";
+import { ROLES } from "@/config/roles";
+import { getSession, signIn, signOut } from "@/lib/auth";
 
 /**
  * The platform operator's own login — now the site's root (`/`), so bookmarking the base
@@ -17,6 +18,21 @@ export function PlatformLoginCard() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [checkingSession, setCheckingSession] = useState(true);
+
+  // نفس الإصلاح الجذري في LoginCard.tsx: لو فيه جلسة محفوظة أصلاً (مالك سنتر
+  // حقيقي أو مشغّل المنصة)، ادخل على طول من غير ما تعرض فورم الدخول تاني.
+  useEffect(() => {
+    const existing = getSession();
+    if (existing) {
+      void navigate({
+        to: existing.isPlatformAdmin ? "/platform/new-center" : ROLES[existing.role].home,
+        replace: true,
+      });
+      return;
+    }
+    setCheckingSession(false);
+  }, [navigate]);
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -40,6 +56,14 @@ export function PlatformLoginCard() {
     setError(null);
     toast.success("مرحباً بك في لوحة إدارة المنصة");
     void navigate({ to: "/platform/new-center" });
+  }
+
+  if (checkingSession) {
+    return (
+      <div dir="rtl" className="flex min-h-screen items-center justify-center bg-canvas">
+        <p className="text-base font-black text-muted-foreground">جارٍ التحقق من الجلسة…</p>
+      </div>
+    );
   }
 
   return (

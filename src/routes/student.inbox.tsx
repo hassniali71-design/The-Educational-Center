@@ -125,6 +125,7 @@ function InboxPage() {
                         </p>
                       ) : null}
                       <p className="mt-1 text-[11px] font-bold text-muted-foreground">
+                        {state.teachers.find((t) => t.id === l.teacher_id)?.full_name ?? "مدرّس"} ·{" "}
                         {formatDateTime(l.created_at)}
                         {l.due_at ? ` · يُسلَّم قبل ${formatDateTime(l.due_at)}` : null}
                       </p>

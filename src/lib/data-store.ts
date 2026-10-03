@@ -485,6 +485,20 @@ let lastLocalMutationAt = 0;
 const SILENT_REFRESH_QUIET_MS = 5_000;
 
 /**
+ * عدّاد تفريق وحيد الاتجاه — `Date.now()` دقته بالملي ثانية، فلو تولّدت أكتر من
+ * ID في حلقة متزامنة سريعة (زي تسجيل عدة طلاب كـ"مادة إضافية" في createGroup)
+ * ممكن يتطابق الطابع الزمني بالكامل بين تكرارين، وملحق Math.random() العشوائي
+ * (٠-٩٩٩ بس) مش كافي يمنع التصادم دايماً — تصادم فعلي بيتسبب في رفض صف كامل
+ * بصمت من قاعدة البيانات (تكرار مفتاح أساسي) فيختفي طالب من غير أي رسالة خطأ.
+ * هذا العدّاد يضاف لأي ID مولَّد من `Date.now()` فيضمن تفرّد كامل داخل نفس العملية.
+ */
+let idDisambiguator = 0;
+function uniqueSuffix(): string {
+  idDisambiguator = (idDisambiguator + 1) % 1_000_000;
+  return idDisambiguator.toString(36);
+}
+
+/**
  * §0 fix — Drop the in-memory cache to the seed placeholder so `useSyncExternalStore`
  * can't paint the previous tenant's rows for the RTT between the identifier change and
  * the Supabase response. We also force `hydratedForIdentifier = null` (so the next
@@ -765,7 +779,7 @@ export function addSubjectQuote(subjectId: string, text: string): void {
   let entry: SubjectQuote | null = null;
   update((state) => {
     entry = {
-      id: `sq-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      id: `sq-${Date.now()}-${uniqueSuffix()}`,
       center_id: state.center.id,
       subject_id: subjectId,
       text: trimmed,
@@ -3214,7 +3228,7 @@ export function logActivity(
   let entry: ActivityEntry | null = null;
   update((state) => {
     entry = {
-      id: `act-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      id: `act-${Date.now()}-${uniqueSuffix()}`,
       center_id: state.center.id,
       kind,
       title,
@@ -3237,7 +3251,7 @@ export function pushNotification(
   let row: CenterNotification | null = null;
   update((state) => {
     row = {
-      id: `ntf-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      id: `ntf-${Date.now()}-${uniqueSuffix()}`,
       center_id: state.center.id,
       kind,
       severity,
@@ -3508,7 +3522,7 @@ export function upsertScheduleSlot(input: {
   let row: ScheduleSlot | null = null;
   update((state) => {
     row = {
-      id: input.id ?? `slot-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      id: input.id ?? `slot-${Date.now()}-${uniqueSuffix()}`,
       center_id: state.center.id,
       teacher_id: input.teacherId,
       teacher_name: input.teacherName,
@@ -3668,7 +3682,7 @@ export interface CreateTaskInput {
 
 export function createTask(input: CreateTaskInput): Task {
   const now = new Date().toISOString();
-  const id = `tsk-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+  const id = `tsk-${Date.now()}-${uniqueSuffix()}`;
   const row: Task = {
     id,
     center_id: "",
@@ -4441,7 +4455,9 @@ export interface CreateGroupInput {
  * يحدث state.students ليُسند group_id لكل طالب مُختار (و group_name من اسم المجموعة).
  * عند انتهاء السعة: يرفض الإضافة مع رسالة واضحة.
  */
-export function createGroup(input: CreateGroupInput): { group: Group; warnings: string[] } {
+export async function createGroup(
+  input: CreateGroupInput,
+): Promise<{ group: Group; warnings: string[] }> {
   const state = getData();
   const grade = state.grades.find((g) => g.id === input.gradeId);
   const subject = state.subjects.find((s) => s.id === input.subjectId);
@@ -4465,7 +4481,7 @@ export function createGroup(input: CreateGroupInput): { group: Group; warnings: 
   }
 
   const now = new Date().toISOString();
-  const newId = `grp-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+  const newId = `grp-${Date.now()}-${uniqueSuffix()}`;
 
   /**
    * طالب مشترك في أكتر من مادة (سيناريو شائع جداً) بيظهر "مؤهَّل" لأكتر من مجموعة
@@ -4519,71 +4535,83 @@ export function createGroup(input: CreateGroupInput): { group: Group; warnings: 
     notes: input.notes ?? null,
   };
 
-  const studentsAfter = state.students.map((s) =>
-    primaryIds.has(s.id) ? { ...s, group_id: newId, group_name: group.name } : s,
-  );
+  /**
+   * جذر باغ "لازم أعمل العملية مرتين/ثلاثة قبل ما تظهر صح": النسخة القديمة كانت
+   * تحدّث الحالة المحلية فوراً (متفائلة) ثم تبعت الحفظ الحقيقي على Supabase في
+   * الخلفية (fire-and-forget) بدون انتظار، وبدون أي تراجع لو فشل. لو إدخال صف
+   * المجموعة نفسه فشل (تعثر شبكي عابر، أو أي خطأ من الخادم)، الواجهة كانت تفضل
+   * معروضة "تم الإنشاء" محلياً رغم إن المجموعة غير موجودة فعلياً على الخادم —
+   * فأي Refresh بعد كده كان بيرجّع الحالة الحقيقية (بدون المجموعة أو بدون
+   * الطلاب)، وكان المالك يحس إنه لازم "يعيد العملية" تاني (واللي كانت بتنجح
+   * بالصدفة في المحاولة التالية لو النت استقر).
+   *
+   * الحل الجذري: ننتظر (await) نجاح الحفظ الحقيقي على Supabase (صف المجموعة +
+   * صفوف الطلاب) **قبل** أي تحديث للحالة المحلية. لو فشل أي جزء، نرمي الخطأ
+   * فوراً من غير ما نلمس الحالة المحلية إطلاقاً — زرار الحفظ في المودال (بتاع
+   * GroupCreateModal) بيمسك الخطأ ده ويعرضه، فالمالك يعرف فوراً إن المحاولة
+   * فشلت بدل ما يشوف نجاحاً وهمياً.
+   */
+  const identifier = currentIdentifier();
+  if (USE_SUPABASE && identifier) {
+    await insertRow({
+      data: { identifier, table: "groups", row: group as unknown as PlainRow },
+    });
+    const results = await Promise.allSettled(
+      [...primaryIds].map((sid) =>
+        updateRow({
+          data: {
+            identifier,
+            table: "students",
+            id: sid,
+            patch: { group_id: newId, group_name: group.name },
+          },
+        }),
+      ),
+    );
+    const failed = results.find((r) => r.status === "rejected") as
+      | PromiseRejectedResult
+      | undefined;
+    if (failed) {
+      // صف المجموعة اتسجَّل فعلاً لكن ربط طالب أو أكتر فشل — نمسح صف المجموعة
+      // تاني (مش هينفع نسيبها مجموعة فاضية "شبح") عشان المحاولة التالية تبدأ
+      // من جديد بحالة نظيفة ومتسقة.
+      await deleteRows({ data: { identifier, table: "groups", ids: [newId] } }).catch(() => {});
+      throw failed.reason instanceof Error
+        ? failed.reason
+        : new Error("فشل ربط بعض الطلاب بالمجموعة على الخادم");
+    }
+  }
 
+  // `studentsAfter` يُحسب هنا من الحالة الطازجة وقت الـcommit نفسه (مش من
+  // `state` المُلتقطة فوق قبل الـawait) — لو حصل أي تعديل محلي تزامني آخر خلال
+  // انتظار الحفظ الحقيقي على Supabase، كان هيضيع لو استخدمنا سناب شوت قديم.
   update((s) => ({
     ...s,
     groups: [...s.groups, group],
-    students: studentsAfter,
+    students: s.students.map((st) =>
+      primaryIds.has(st.id) ? { ...st, group_id: newId, group_name: group.name } : st,
+    ),
   }));
-  /**
-   * Sequenced on purpose (root cause of a real bug from the live center):
-   * `students.group_id` is a foreign key into `groups(id)`
-   * (0002_reference_and_people.sql). The old code fired `syncInsert("groups", ...)`
-   * and every student's `syncUpdate("students", sid, {group_id: newId, ...})`
-   * as separate fire-and-forget requests with no ordering — a student's UPDATE
-   * could reach Postgres before the group's own INSERT committed, which
-   * silently failed the FK check. The student stayed enrolled only in the
-   * local optimistic UI, not in the real database: the group's `enrolled`
-   * count (written correctly, since it's part of the group's own row) no
-   * longer matched who was actually in it. Reopening the page later refetched
-   * the real (unlinked) students, and re-adding them by hand through
-   * `addStudentToGroup` bumped `enrolled` a second time on top of the
-   * already-correct original count — exactly the "group says 20 but the
-   * session only has 10" bug reported. Awaiting the group insert first
-   * guarantees the parent row exists before any child row can reference it.
-   */
-  void (async () => {
-    const identifier = currentIdentifier();
-    if (!USE_SUPABASE || !identifier) return;
-    try {
-      await insertRow({
-        data: { identifier, table: "groups", row: group as unknown as PlainRow },
-      });
-    } catch (err) {
-      reportSyncFailure("groups", err);
-      return;
-    }
-    for (const sid of primaryIds) {
-      void updateRow({
-        data: {
-          identifier,
-          table: "students",
-          id: sid,
-          patch: { group_id: newId, group_name: group.name },
-        },
-      }).catch((err) => reportSyncFailure("students", err));
-    }
-  })();
 
   // لو حد اتنقل من مجموعة قديمة لنفس المادة، لازم عدادها ينقص فوراً (نفس بالظبط
   // بوكيبنج addStudentToGroup الموجودة أصلاً) وإلا كارت المجموعة القديمة يفضل
   // يعرض عدد طلاب زيادة عن الحقيقة.
   for (const [oldGroupId, movedAway] of vacatedCounts) {
-    const prevGroup = state.groups.find((g) => g.id === oldGroupId);
-    if (!prevGroup) continue;
-    const nextEnrolled = Math.max(0, prevGroup.enrolled - movedAway);
-    update((s) => ({
-      ...s,
-      groups: s.groups.map((g) => (g.id === oldGroupId ? { ...g, enrolled: nextEnrolled } : g)),
-    }));
+    let nextEnrolled = 0;
+    update((s) => {
+      const prevGroup = s.groups.find((g) => g.id === oldGroupId);
+      if (!prevGroup) return s;
+      nextEnrolled = Math.max(0, prevGroup.enrolled - movedAway);
+      return {
+        ...s,
+        groups: s.groups.map((g) => (g.id === oldGroupId ? { ...g, enrolled: nextEnrolled } : g)),
+      };
+    });
     syncUpdate("groups", oldGroupId, { enrolled: nextEnrolled });
   }
 
   for (const sid of secondaryIds) {
-    enrollStudentInAdditionalGroup(sid, newId);
+    await enrollStudentInAdditionalGroup(sid, newId);
   }
 
   return { group, warnings };
@@ -4753,7 +4781,7 @@ export function enrollStudentInAdditionalGroup(
       // متتالية سريعة) — أول تسجيل بينجح والباقي بيترفض بصمت من قاعدة
       // البيانات (تكرار مفتاح أساسي)، فيختفي طالب أو أكتر من المجموعة الجديدة
       // من غير أي رسالة خطأ. نفس نمط باقي المعرِّفات في الملف ده (grp-, slot-).
-      id: `sge-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      id: `sge-${Date.now()}-${uniqueSuffix()}`,
       center_id: student.center_id,
       student_id: studentId,
       group_id: groupId,

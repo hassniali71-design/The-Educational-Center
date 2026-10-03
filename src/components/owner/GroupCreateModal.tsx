@@ -104,7 +104,7 @@ export function GroupCreateModal({ open, onClose }: GroupCreateModalProps) {
     }
     setSaving(true);
     try {
-      createGroup({
+      await createGroup({
         name: name.trim(),
         gradeId,
         subjectId,

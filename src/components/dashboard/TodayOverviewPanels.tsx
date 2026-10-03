@@ -28,17 +28,39 @@ function todayKey() {
   return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
 }
 
-function isToday(dateStr: string | null | undefined): boolean {
+/**
+ * سجلات الحضور الغائبة مخزَّنة بـ`checked_in_at: "—"` (مفيش وقت تسجيل حقيقي)،
+ * فكانت `isToday("—")` ترجع false دايماً — يعني عدد الغياب في "متوسط الحضور
+ * اليوم" تحت كان صفر ثابت دايماً مهما كان عدد الغيابات الحقيقي. نستخرج التاريخ
+ * من معرّف السجل (`at-<epoch-ms>`) كـfallback لما checked_in_at غير قابل للقراءة.
+ */
+function isToday(dateStr: string | null | undefined, fallbackId?: string): boolean {
   if (!dateStr) return false;
   // يقبل ISO أو نص عربي مختصر (وقت بدون تاريخ)
   const parsed = new Date(dateStr);
-  if (!Number.isFinite(parsed.getTime())) return false;
-  const d = new Date();
-  return (
-    parsed.getFullYear() === d.getFullYear() &&
-    parsed.getMonth() === d.getMonth() &&
-    parsed.getDate() === d.getDate()
-  );
+  if (Number.isFinite(parsed.getTime())) {
+    const d = new Date();
+    return (
+      parsed.getFullYear() === d.getFullYear() &&
+      parsed.getMonth() === d.getMonth() &&
+      parsed.getDate() === d.getDate()
+    );
+  }
+  if (fallbackId) {
+    const match = /-(\d{10,})(?:-|$)/.exec(fallbackId);
+    if (match) {
+      const fromId = new Date(Number(match[1]));
+      if (!Number.isNaN(fromId.getTime())) {
+        const d = new Date();
+        return (
+          fromId.getFullYear() === d.getFullYear() &&
+          fromId.getMonth() === d.getMonth() &&
+          fromId.getDate() === d.getDate()
+        );
+      }
+    }
+  }
+  return false;
 }
 
 export function TodayOverviewPanels() {
@@ -84,7 +106,7 @@ export function TodayOverviewPanels() {
   const teachersWorkingToday = useMemo(() => {
     const teacherIds = new Set<string>();
     for (const att of state.attendanceRecords) {
-      if (isToday(att.checked_in_at)) {
+      if (isToday(att.checked_in_at, att.id)) {
         const st = state.students.find((s) => s.id === att.student_id);
         if (st) {
           for (const sid of st.subject_ids) {
@@ -112,7 +134,7 @@ export function TodayOverviewPanels() {
 
   // متوسط الحضور اليوم
   const todayAttendance = useMemo(() => {
-    const rows = state.attendanceRecords.filter((a) => isToday(a.checked_in_at));
+    const rows = state.attendanceRecords.filter((a) => isToday(a.checked_in_at, a.id));
     if (rows.length === 0) return { count: 0, present: 0, late: 0, absent: 0, hasData: false };
     const present = rows.filter((r) => r.status === "present").length;
     const late = rows.filter((r) => r.status === "late").length;

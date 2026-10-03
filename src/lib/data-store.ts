@@ -1897,7 +1897,7 @@ export function markAttendanceForGroup(
       (a) =>
         a.student_id === studentId &&
         a.group_name === group.name &&
-        sameDay(a.checked_in_at, now),
+        sameDay(a.checked_in_at, now, a.id),
     );
 
     if (existing?.locked) {
@@ -2000,18 +2000,42 @@ export function markAttendanceForGroup(
   return result;
 }
 
-function sameDay(iso: string, ref: Date): boolean {
+/**
+ * جذر باغ خطير في عزل الحضور بالتاريخ: سجلات الغياب تُخزَّن بـ `checked_in_at: "—"`
+ * (الطالب أصلاً لم يسجّل حضوره، فمفيش وقت فعلي نكتبه) — لكن النسخة القديمة من
+ * هذه الدالة كانت تعتبر أي سجل بـ"—" "نفس اليوم" **دايماً وبغض النظر عن `ref`**،
+ * يعني غياب طالب يوم الأربعاء كان يُعتبر "غياب اليوم" في أي تحقق لاحق لأي يوم
+ * تاني (السبت التالي مثلاً) — فـ`markAttendanceForGroup` كان يلاقيه "existing"
+ * ويستبدله (overwrite) بدل ما يسجّل غياب السبت كصف جديد، فيضيع تاريخ الغياب
+ * القديم تماماً ويختلط باليوم الجديد. الحل: بدل افتراض "—" = اليوم دايماً،
+ * نستخرج التاريخ الحقيقي من معرّف السجل نفسه (`at-<epoch-ms>`، نفس نمط توليد
+ * الـID في كل مكان بالملف ده) اللي بيحمل وقت الإنشاء الفعلي حتى لو checked_in_at
+ * كانت "—" — فالمقارنة بقت بتاريخ حقيقي، مش افتراض ثابت.
+ */
+function sameDay(iso: string, ref: Date, fallbackId?: string): boolean {
   const t = Date.parse(iso);
-  if (Number.isNaN(t)) {
-    const label = iso;
-    return label.startsWith("اليوم") || label === "—";
+  if (!Number.isNaN(t)) {
+    const d = new Date(t);
+    return (
+      d.getFullYear() === ref.getFullYear() &&
+      d.getMonth() === ref.getMonth() &&
+      d.getDate() === ref.getDate()
+    );
   }
-  const d = new Date(t);
-  return (
-    d.getFullYear() === ref.getFullYear() &&
-    d.getMonth() === ref.getMonth() &&
-    d.getDate() === ref.getDate()
-  );
+  if (fallbackId) {
+    const match = /-(\d{10,})(?:-|$)/.exec(fallbackId);
+    if (match) {
+      const d = new Date(Number(match[1]));
+      if (!Number.isNaN(d.getTime())) {
+        return (
+          d.getFullYear() === ref.getFullYear() &&
+          d.getMonth() === ref.getMonth() &&
+          d.getDate() === ref.getDate()
+        );
+      }
+    }
+  }
+  return iso.startsWith("اليوم");
 }
 
 /* ---------------- §3 — الملازم وبيع الكتب (mutators) ---------------- */
@@ -4294,7 +4318,10 @@ export function getAbsentTodayCountForTeacher(
 ): number {
   const myStudentIds = new Set(getStudentsForTeacher(state, teacherId).map((s) => s.id));
   return state.attendanceRecords.filter(
-    (a) => myStudentIds.has(a.student_id) && a.status === "absent" && sameDay(a.checked_in_at, now),
+    (a) =>
+      myStudentIds.has(a.student_id) &&
+      a.status === "absent" &&
+      sameDay(a.checked_in_at, now, a.id),
   ).length;
 }
 

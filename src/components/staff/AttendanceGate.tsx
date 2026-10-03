@@ -26,15 +26,36 @@ const STATUS_TONE = {
   absent: "destructive",
 } as const;
 
-function sameDay(iso: string, ref: Date): boolean {
+/**
+ * سجلات الغياب مخزَّنة بـ`checked_in_at: "—"` (مفيش وقت تسجيل حقيقي). كانت
+ * النسخة القديمة تعتبر "—" = "نفس اليوم" دايماً بغض النظر عن `ref` — يعني غياب
+ * قديم من أي يوم كان يظهر كـ"غياب اليوم" في كل تحقق لاحق. الحل: نستخرج التاريخ
+ * الحقيقي من معرّف السجل (`at-<epoch-ms>`) اللي بيحمل وقت الإنشاء الفعلي.
+ */
+function sameDay(iso: string, ref: Date, fallbackId?: string): boolean {
   const t = Date.parse(iso);
-  if (Number.isNaN(t)) return iso.startsWith("اليوم") || iso === "—";
-  const d = new Date(t);
-  return (
-    d.getFullYear() === ref.getFullYear() &&
-    d.getMonth() === ref.getMonth() &&
-    d.getDate() === ref.getDate()
-  );
+  if (!Number.isNaN(t)) {
+    const d = new Date(t);
+    return (
+      d.getFullYear() === ref.getFullYear() &&
+      d.getMonth() === ref.getMonth() &&
+      d.getDate() === ref.getDate()
+    );
+  }
+  if (fallbackId) {
+    const match = /-(\d{10,})(?:-|$)/.exec(fallbackId);
+    if (match) {
+      const d = new Date(Number(match[1]));
+      if (!Number.isNaN(d.getTime())) {
+        return (
+          d.getFullYear() === ref.getFullYear() &&
+          d.getMonth() === ref.getMonth() &&
+          d.getDate() === ref.getDate()
+        );
+      }
+    }
+  }
+  return iso.startsWith("اليوم");
 }
 
 function statusLabel(s: "present" | "late" | "absent") {
@@ -46,7 +67,7 @@ export function StaffGate() {
   const { students, attendanceRecords } = state;
   const now = new Date();
   const today = now.toDateString();
-  const todayRecords = attendanceRecords.filter((r) => sameDay(r.checked_in_at, now));
+  const todayRecords = attendanceRecords.filter((r) => sameDay(r.checked_in_at, now, r.id));
 
   const present = todayRecords.filter((r) => r.status === "present").length;
   const late = todayRecords.filter((r) => r.status === "late").length;
@@ -422,7 +443,7 @@ function GroupAttendanceModal({ group, onClose }: { group: Group; onClose: () =>
   const today = new Date();
   const todayMap = new Map<string, "present" | "late" | "absent">();
   attendanceRecords.forEach((r) => {
-    if (r.group_name === group.name && sameDay(r.checked_in_at, today)) {
+    if (r.group_name === group.name && sameDay(r.checked_in_at, today, r.id)) {
       todayMap.set(r.student_id, r.status);
     }
   });

@@ -15,16 +15,38 @@ import type { AttendanceRecord, BookletSale, PaymentRecord, Task } from "@/types
  * لا أزرار "إضافة" — الموظف يطّلع فقط.
  */
 
-function isToday(iso: string): boolean {
+/**
+ * سجلات الغياب مخزَّنة بـ`checked_in_at: "—"` (مفيش وقت حقيقي)، فكانت
+ * `isToday("—")` ترجع false دايماً — يعني الغياب ما كان يظهر في "أحداث اليوم"
+ * إطلاقاً حتى لو حصل النهارده بالذات. نستخرج التاريخ الحقيقي من معرّف السجل
+ * (`at-<epoch-ms>`) اللي بيحمل وقت الإنشاء الفعلي حتى لو checked_in_at كانت "—".
+ */
+function isToday(iso: string, fallbackId?: string): boolean {
   const t = Date.parse(iso);
-  if (Number.isNaN(t)) return iso.startsWith("اليوم");
-  const d = new Date(t);
-  const r = new Date();
-  return (
-    d.getFullYear() === r.getFullYear() &&
-    d.getMonth() === r.getMonth() &&
-    d.getDate() === r.getDate()
-  );
+  if (!Number.isNaN(t)) {
+    const d = new Date(t);
+    const r = new Date();
+    return (
+      d.getFullYear() === r.getFullYear() &&
+      d.getMonth() === r.getMonth() &&
+      d.getDate() === r.getDate()
+    );
+  }
+  if (fallbackId) {
+    const match = /-(\d{10,})(?:-|$)/.exec(fallbackId);
+    if (match) {
+      const d = new Date(Number(match[1]));
+      if (!Number.isNaN(d.getTime())) {
+        const r = new Date();
+        return (
+          d.getFullYear() === r.getFullYear() &&
+          d.getMonth() === r.getMonth() &&
+          d.getDate() === r.getDate()
+        );
+      }
+    }
+  }
+  return iso.startsWith("اليوم");
 }
 
 export function DailyStaffEvents() {
@@ -34,7 +56,7 @@ export function DailyStaffEvents() {
   const todayPayments = payments.filter((p) => isToday(p.created_at)).slice(0, 10);
   const todaySales = bookletSales.filter((s) => isToday(s.sold_at)).slice(0, 10);
   const todayLateAbsent = attendanceRecords
-    .filter((r) => (r.status === "late" || r.status === "absent") && isToday(r.checked_in_at))
+    .filter((r) => (r.status === "late" || r.status === "absent") && isToday(r.checked_in_at, r.id))
     .slice(0, 5);
   const todayTasks: Task[] = tasks
     .filter((t) => isToday(t.created_at))

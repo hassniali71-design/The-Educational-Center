@@ -16,16 +16,37 @@ import { formatNumber, formatPercent } from "@/lib/format";
  * صفر صادق عندما لا توجد بيانات — لا أرقام تجميلية.
  */
 
-function isToday(dateStr: string | null | undefined): boolean {
+/**
+ * سجلات الغياب مخزَّنة بـ`checked_in_at: "—"` فكانت `isToday` ترجع false دايماً
+ * لها، فتُستثنى من "حضور اليوم" حتى لو حصلت النهارده بالذات. نستخرج التاريخ من
+ * معرّف السجل (`at-<epoch-ms>`) كـfallback.
+ */
+function isToday(dateStr: string | null | undefined, fallbackId?: string): boolean {
   if (!dateStr) return false;
   const parsed = new Date(dateStr);
-  if (!Number.isFinite(parsed.getTime())) return false;
-  const d = new Date();
-  return (
-    parsed.getFullYear() === d.getFullYear() &&
-    parsed.getMonth() === d.getMonth() &&
-    parsed.getDate() === d.getDate()
-  );
+  if (Number.isFinite(parsed.getTime())) {
+    const d = new Date();
+    return (
+      parsed.getFullYear() === d.getFullYear() &&
+      parsed.getMonth() === d.getMonth() &&
+      parsed.getDate() === d.getDate()
+    );
+  }
+  if (fallbackId) {
+    const match = /-(\d{10,})(?:-|$)/.exec(fallbackId);
+    if (match) {
+      const fromId = new Date(Number(match[1]));
+      if (!Number.isNaN(fromId.getTime())) {
+        const d = new Date();
+        return (
+          fromId.getFullYear() === d.getFullYear() &&
+          fromId.getMonth() === d.getMonth() &&
+          fromId.getDate() === d.getDate()
+        );
+      }
+    }
+  }
+  return false;
 }
 
 export function CenterActivityPanels() {
@@ -35,7 +56,7 @@ export function CenterActivityPanels() {
     [state.payments],
   );
   const todayAttendance = useMemo(
-    () => state.attendanceRecords.filter((a) => isToday(a.checked_in_at)),
+    () => state.attendanceRecords.filter((a) => isToday(a.checked_in_at, a.id)),
     [state.attendanceRecords],
   );
   const todayHomework = useMemo(

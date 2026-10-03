@@ -2,7 +2,6 @@ import { createFileRoute, Navigate, redirect, useNavigate } from "@tanstack/reac
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   BookOpenCheck,
-  CheckCircle2,
   ClipboardList,
   Dices,
   FileText,
@@ -41,7 +40,6 @@ import { retryLessonPipeline, runLessonPipeline } from "@/lib/ai/lesson-pipeline
 import { formatNumber } from "@/lib/format";
 import { getSession } from "@/lib/auth";
 import {
-  getAssessmentScoresForLesson,
   getBookExerciseTask,
   getCurriculumLessonsForUnit,
   getCurriculumUnitsForSubjectGrade,
@@ -215,8 +213,6 @@ function SessionMode() {
   const activeQuestionPool = selectedLessonReady
     ? getQuestionsForLesson(state, selectedLessonReady.id)
     : state.sessionQuestions.filter((q) => q.lesson_id === null);
-  const lessonScores = selectedLesson ? getAssessmentScoresForLesson(state, selectedLesson.id) : [];
-
   const [slideIndex, setSlideIndex] = useState(0);
   const [answered, setAnswered] = useState(false);
   const [pickedId, setPickedId] = useState<string | null>(null);
@@ -785,22 +781,6 @@ function SessionMode() {
                     >
                       <Send className="size-4" />
                       {eHomeworkReleased ? "تم تأكيد الإتاحة ✓" : "تأكيد الإتاحة للطلاب"}
-                    </button>
-                  </div>
-                </Panel>
-
-                <Panel title="ختام الحصة" description="حفظ ملخص الحصة والعودة للوحة المدرس.">
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <StatusBadge tone="primary">
-                      <CheckCircle2 className="size-3.5" />
-                      {formatNumber(lessonScores.length)} تقييم مسجَّل في هذا الدرس
-                    </StatusBadge>
-                    <button
-                      type="button"
-                      onClick={handleEndSession}
-                      className="rounded-xl bg-navy px-5 py-2.5 text-sm font-black text-navy-foreground hover:opacity-90"
-                    >
-                      إنهاء الحصة وحفظ الملخص
                     </button>
                   </div>
                 </Panel>

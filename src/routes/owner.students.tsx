@@ -182,9 +182,11 @@ function StudentsPage() {
           icon={User}
           tone={avgAttendance >= 85 ? "success" : "warning"}
         />
+        {/* avgScore مشتق من avg_score (نسبة ٠-١٠٠ داخلياً) — القسمة على ١٠ ترجعه
+            لمقياس "من ١٠" اللي المدرس بيدخّل بيه كل درجة فعلياً، بدل عرض ٨٠ مكان ٨. */}
         <StatCard
-          label="متوسط الدرجات"
-          value={formatNumber(avgScore)}
+          label="متوسط الدرجات (من ١٠)"
+          value={formatNumber(avgScore / 10)}
           icon={Target}
         />
         <StatCard
@@ -455,7 +457,12 @@ function StudentsPage() {
           <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             <DetailStat label="نقاط لوحة الشرف" value={formatNumber(selected.points)} />
             <DetailStat label="نسبة الحضور" value={formatPercent(selected.attendance_rate)} />
-            <DetailStat label="متوسط الدرجات" value={formatNumber(selected.avg_score)} />
+            {/* avg_score مُخزَّن داخلياً كنسبة ٠-١٠٠ (averagePercent) لاستخدامه في عتبات
+                classifyStudent — لكن المدرس يدخل كل درجة من ١٠ (AssessmentsTable/
+                StudentScoreKeyboard)، فعرضها هنا بلا أي تحويل كان يُظهر "٨" كـ"٨٠"
+                (نسبة بلا علامة %، تبدو كأنها الدرجة الخام مضروبة في ١٠). القسمة على
+                ١٠ ترجعها لنفس مقياس الدرجة الخام المألوف للمدرس والطالب. */}
+            <DetailStat label="متوسط الدرجات (من ١٠)" value={formatNumber(selected.avg_score / 10)} />
             <DetailStat
               label="المستحق"
               value={formatCurrency(selected.balance_due)}

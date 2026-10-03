@@ -104,7 +104,14 @@ function ParentPortal() {
           icon={CalendarCheck}
           tone="success"
         />
-        <StatCard label="متوسط الدرجات" value={formatNumber(child.avg_score)} icon={Target} />
+        {/* avg_score مُخزَّن داخلياً كنسبة ٠-١٠٠ — المدرس يدخّل كل درجة من ١٠ فعلياً،
+            فعرضها بلا تحويل كان يُظهر "٨" كـ"٨٠". القسمة على ١٠ ترجعها لنفس مقياس
+            الدرجة الخام المألوف. */}
+        <StatCard
+          label="متوسط الدرجات (من ١٠)"
+          value={formatNumber(child.avg_score / 10)}
+          icon={Target}
+        />
         <StatCard
           label="حالة السداد"
           value={child.payment_status === "paid" ? "مسدد" : formatCurrency(child.balance_due)}

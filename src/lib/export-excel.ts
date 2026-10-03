@@ -60,8 +60,10 @@ export async function buildCenterWorkbook(data: CenterExportData) {
         "حالة السداد": s.payment_status,
         "المتبقي عليه": s.balance_due,
         النقاط: s.points,
-        "نسبة الحضور": s.attendance_rate,
-        "متوسط الدرجات": s.avg_score,
+        "نسبة الحضور (%)": s.attendance_rate,
+        // avg_score مُخزَّن داخلياً كنسبة ٠-١٠٠ — المدرس يدخّل كل درجة من ١٠ فعلياً،
+        // فالقسمة على ١٠ ترجعها لنفس المقياس بدل عرض ٨٠ مكان ٨ في ملف إكسل.
+        "متوسط الدرجات (من 10)": s.avg_score / 10,
       })),
     ),
     "الطلاب",

@@ -44,7 +44,9 @@ export function StudentClassificationCard({
       </div>
       <div className="mt-2 flex flex-wrap gap-2 text-xs font-bold text-muted-foreground">
         <span>حضور {formatPercent(student.attendance_rate)}</span>
-        <span>· متوسط {formatNumber(student.avg_score)}</span>
+        {/* avg_score مُخزَّن داخلياً كنسبة ٠-١٠٠ — المدرس يدخّل كل درجة من ١٠، فالقسمة
+            على ١٠ هنا ترجعها لنفس المقياس بدل عرض ٨٠ مكان ٨. */}
+        <span>· متوسط {formatNumber(student.avg_score / 10)}/١٠</span>
       </div>
       {reason ? <p className="mt-2 text-xs font-extrabold text-destructive">{reason}</p> : null}
       {showAlertLink ? (

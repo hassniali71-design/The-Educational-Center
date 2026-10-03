@@ -74,9 +74,11 @@ export function GroupMetricsPanel({ group }: { group: Group }) {
         icon={AlertTriangle}
         tone="warning"
       />
+      {/* avgScore مُشتق من avg_score (نسبة ٠-١٠٠ داخلياً) — المدرس يدخّل كل درجة من
+          ١٠ فعلياً، فالقسمة على ١٠ هنا ترجعها لنفس المقياس بدل عرض ٨٠ مكان ٨. */}
       <StatCard
-        label="متوسط الأداء"
-        value={students.length ? formatNumber(Math.round(avgScore)) : "—"}
+        label="متوسط الأداء (من ١٠)"
+        value={students.length ? formatNumber(Math.round(avgScore) / 10) : "—"}
         icon={Award}
         tone="primary"
       />

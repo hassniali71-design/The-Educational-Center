@@ -2532,10 +2532,38 @@ export function getPlatformNotesForSubject(
     .sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
 }
 
+/**
+ * جذر باغ خطير في تقفيل الوردية: كانت `closeShift` (وصفحة staff.shift.tsx بالكامل
+ * — "المبلغ المتوقع"، قائمة العمليات، "فرق الخزنة") تحسب كل حسابها من
+ * `state.payments` بالكامل بلا أي فلتر — يعني **كل عمليات تحصيل السنتر منذ أول
+ * يوم تشغيل**، لا عمليات الوردية الحالية فقط. أول وردية تُقفَل تصادف الرقم
+ * الصحيح بالمصادفة (مفيش تاريخ سابق)، لكن أي وردية تالية بتحسب "المتوقع" على
+ * **إجمالي كل الورديات من بداية الزمن مجمّعة**، فالخزنة الفعلية (نقدية الوردية
+ * دي بس) تفضل تظهر "فرق" ضخم كل مرة — عطّل ميزة المطابقة تماماً من الوردية
+ * الثانية فصاعداً. الحل: نحصر الحساب على عمليات **مسجَّلة بعد آخر تقفيل وردية
+ * فعلي** فقط (أو كل التاريخ لو مفيش تقفيل سابق إطلاقاً). `ShiftClosure.closed_at`
+ * نص عربي غير قابل للمقارنة الزمنية ("اليوم ٣:٤٥ م")، فنستخرج التاريخ الحقيقي من
+ * معرّف الإغلاق نفسه (`sh-<epoch-ms>`، نفس نمط الـID هنا) بدل الاعتماد عليه.
+ */
+export function getCurrentShiftPayments(state: DataState): PaymentRecord[] {
+  const lastClosure = state.shiftClosures[0];
+  if (!lastClosure) return state.payments;
+  const match = /^sh-(\d+)/.exec(lastClosure.id);
+  const sinceMs = match ? Number(match[1]) : 0;
+  return state.payments.filter((p) => {
+    const t = Date.parse(p.created_at);
+    return Number.isNaN(t) ? true : t > sinceMs;
+  });
+}
+
 export function closeShift(countedAmount: number): { expected: number; diff: number } {
   let closure!: ShiftClosure;
   update((state) => {
-    const expected = state.payments.reduce((sum, p) => sum + p.amount, 0);
+    // نقدي فقط — المحفظة/إنستاباي/تحويل بنكي/فوري لا تدخل الدرج فعلياً، فمقارنتها
+    // بالنقدية المعدودة كانت تُظهر "عجز" دائم بقيمة كل المدفوعات الرقمية.
+    const expected = getCurrentShiftPayments(state)
+      .filter((p) => p.method === "cash")
+      .reduce((sum, p) => sum + p.amount, 0);
     closure = {
       id: `sh-${Date.now()}`,
       center_id: state.center.id,

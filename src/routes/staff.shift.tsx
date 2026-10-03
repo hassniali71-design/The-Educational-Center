@@ -5,7 +5,7 @@ import { toast } from "sonner";
 
 import { Panel, StatCard, StatusBadge } from "@/components/dashboard/StatCard";
 import { AppShell } from "@/components/layout/AppShell";
-import { closeShift, useDataStore } from "@/lib/data-store";
+import { closeShift, getCurrentShiftPayments, useDataStore } from "@/lib/data-store";
 import { formatCurrency, formatNumber } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -23,8 +23,24 @@ export const Route = createFileRoute("/staff/shift")({
 });
 
 function ShiftPage() {
-  const { payments, attendanceRecords, shiftClosures } = useDataStore();
-  const expected = payments.reduce((s, p) => s + p.amount, 0);
+  const state = useDataStore();
+  const { attendanceRecords, shiftClosures } = state;
+  // عمليات الوردية الحالية فقط (منذ آخر تقفيل) — لا كل تاريخ السنتر، وإلا كل
+  // وردية تالية للأولى كانت تحسب "المتوقع" على إجمالي كل الورديات السابقة
+  // مجمّعة. راجع تعليق getCurrentShiftPayments في data-store.ts.
+  const payments = useMemo(() => getCurrentShiftPayments(state), [state]);
+  const systemTotal = payments.reduce((s, p) => s + p.amount, 0);
+  /**
+   * "المبلغ المتوقع" هنا هو نقدية فعلية داخل الدرج (الحقل نفسه معنون "المبلغ
+   * الفعلي داخل الدرج") — كان يُحسب من كل طرق الدفع مجتمعة، بما فيها المحفظة/
+   * إنستاباي/تحويل بنكي/فوري اللي **لا تدخل الدرج فعلياً إطلاقاً**. ده كان
+   * يُظهر "عجز" دائم في الخزنة بقيمة كل المدفوعات الرقمية حتى لو الدرج مطابق
+   * ١٠٠٪. المطابقة الصحيحة: نقدي فقط.
+   */
+  const cashPayments = useMemo(() => payments.filter((p) => p.method === "cash"), [payments]);
+  const gatewayPayments = useMemo(() => payments.filter((p) => p.method !== "cash"), [payments]);
+  const expected = cashPayments.reduce((s, p) => s + p.amount, 0);
+  const gatewayTotal = gatewayPayments.reduce((s, p) => s + p.amount, 0);
   const [counted, setCounted] = useState(expected);
   // لو الموظف لسه ما لمسش الحقل، نفضل نحدّث القيمة الافتراضية مع أي تحصيل جديد
   // يدخل أثناء فتح الشاشة — بدل ما تفضل مجمّدة على أول رقم ظهر عند التحميل.
@@ -63,12 +79,17 @@ function ShiftPage() {
 
   return (
     <AppShell role="staff" title="تقفيل الوردية" description="مطابقة النقدية وتسليم تقرير اليوم">
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="إجمالي التحصيل" value={formatCurrency(expected)} icon={Banknote} />
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+        <StatCard label="إجمالي النظام (كل الطرق)" value={formatCurrency(systemTotal)} icon={Banknote} />
         <StatCard
-          label="عدد الإيصالات"
-          value={formatNumber(payments.length)}
+          label="نقدي متوقع في الدرج"
+          value={formatCurrency(expected)}
           icon={ClipboardCheck}
+        />
+        <StatCard
+          label="بوابة الدفع (محفظة/إنستاباي/فوري/تحويل)"
+          value={formatCurrency(gatewayTotal)}
+          icon={TrendingUp}
         />
         <StatCard
           label="حضور مسجل"
@@ -77,12 +98,49 @@ function ShiftPage() {
           tone="success"
         />
         <StatCard
-          label="فرق الخزنة"
+          label="فرق الخزنة النقدية"
           value={formatCurrency(diff)}
           icon={LockKeyhole}
           tone={diff === 0 ? "success" : "destructive"}
         />
       </div>
+
+      <Panel
+        title="مقارنة إجمالي النظام مع بوابة الدفع"
+        description="تقسيم عمليات الوردية الحالية حسب طريقة الدفع — نقدي مقابل الطرق الرقمية"
+      >
+        <table className="w-full text-sm">
+          <thead className="text-xs font-black text-muted-foreground">
+            <tr>
+              <th className="py-2 text-right">البند</th>
+              <th className="py-2 text-right">عدد العمليات</th>
+              <th className="py-2 text-right">الإجمالي</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr className="border-t border-border">
+              <td className="py-2 font-black">إجمالي النظام</td>
+              <td className="py-2">{formatNumber(payments.length)}</td>
+              <td className="py-2 font-black">{formatCurrency(systemTotal)}</td>
+            </tr>
+            <tr className="border-t border-border">
+              <td className="py-2 font-black">نقدي</td>
+              <td className="py-2">{formatNumber(cashPayments.length)}</td>
+              <td className="py-2">{formatCurrency(expected)}</td>
+            </tr>
+            <tr className="border-t border-border">
+              <td className="py-2 font-black">بوابة الدفع</td>
+              <td className="py-2">{formatNumber(gatewayPayments.length)}</td>
+              <td className="py-2">{formatCurrency(gatewayTotal)}</td>
+            </tr>
+          </tbody>
+        </table>
+        <p className="mt-3 text-xs font-bold text-muted-foreground">
+          {systemTotal === expected + gatewayTotal
+            ? "✓ النقدي + بوابة الدفع يطابقان إجمالي النظام تماماً."
+            : "⚠ فرق غير متوقع بين إجمالي النظام ومجموع النقدي وبوابة الدفع — راجع سجل العمليات."}
+        </p>
+      </Panel>
 
       {cleanShift ? (
         <div className="flex items-center gap-2 rounded-2xl border-2 border-success/40 bg-success/15 p-3 text-sm font-black text-success">

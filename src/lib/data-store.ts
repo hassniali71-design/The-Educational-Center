@@ -3953,6 +3953,12 @@ export interface CreateGroupResourceInput {
   url: string;
   name: string;
   unit?: string | null;
+  /**
+   * Teacher.id الحقيقي (مساحة "tc-...") — **ليس** session.identifier/Teacher.user_id
+   * (مساحة "TCH-..."). `group_resources.created_by` يشاور على `teachers(id)` (migration
+   * 0037، بعد ما كان يشاور خطأً على accounts(id) فيفشل كل حفظ بصمت — foreign key
+   * violation، نفس باغ teacher_launches.teacher_id المُصلَح سابقاً في migration 0031).
+   */
   createdBy: string;
 }
 

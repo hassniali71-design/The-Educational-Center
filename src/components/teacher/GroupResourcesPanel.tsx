@@ -17,13 +17,11 @@ import type { GroupResourceType } from "@/types";
 export function GroupResourcesPanel({
   groupId,
   teacherId,
-  teacherIdentifier,
   variant = "session",
 }: {
   groupId: string;
+  /** Teacher.id الحقيقي — يُحفظ في `created_by` (يشاور على teachers(id)، migration 0037). */
   teacherId: string;
-  /** الـ login identifier للمدرس (يُحفظ في `created_by`). */
-  teacherIdentifier: string;
   /** "session" = داخل صفحة الحصة (compact) | "curriculum" = صفحة المنهج (أوسع). */
   variant?: "session" | "curriculum";
 }) {
@@ -125,7 +123,7 @@ export function GroupResourcesPanel({
         <AddResourceModal
           onClose={() => setShowAdd(false)}
           onCreate={(input) => {
-            addGroupResource({ ...input, groupId, createdBy: teacherIdentifier });
+            addGroupResource({ ...input, groupId, createdBy: teacherId });
             setShowAdd(false);
             toast.success("تم حفظ الرابط");
           }}

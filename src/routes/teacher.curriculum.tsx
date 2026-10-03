@@ -17,7 +17,6 @@ import { Panel, StatCard } from "@/components/dashboard/StatCard";
 import { AppShell } from "@/components/layout/AppShell";
 import { GroupCurriculumTimeline } from "@/components/teacher/GroupCurriculumTimeline";
 import { GroupResourcesPanel } from "@/components/teacher/GroupResourcesPanel";
-import { useSession } from "@/hooks/use-current-student";
 import { useCurrentTeacher } from "@/hooks/use-current-teacher";
 import {
   createLessonPlan,
@@ -52,7 +51,6 @@ function CurriculumPage() {
   const state = useDataStore();
   const isHydrated = useIsHydrated();
   const teacher = useCurrentTeacher();
-  const session = useSession();
   useEffect(() => {
     if (isHydrated && !teacher) toast.error("الجلسة منتهية — سجّل الدخول من جديد");
   }, [teacher, isHydrated]);
@@ -108,7 +106,6 @@ function CurriculumPage() {
 
   if (!isHydrated) return null;
   if (!teacher) return <Navigate to="/login" />;
-  const teacherIdentifier = session?.identifier ?? teacher.user_id ?? teacher.id;
 
   const totalPrepared = filteredPlans.filter((p) => p.prepared_done).length;
   const totalTaught = filteredPlans.filter((p) => p.taught_done).length;
@@ -304,7 +301,6 @@ function CurriculumPage() {
                 <GroupResourcesPanel
                   groupId={g.id}
                   teacherId={teacher.id}
-                  teacherIdentifier={teacherIdentifier}
                   variant="curriculum"
                 />
                 <GroupCurriculumTimeline groupId={g.id} />

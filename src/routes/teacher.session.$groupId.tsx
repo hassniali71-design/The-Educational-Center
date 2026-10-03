@@ -35,7 +35,6 @@ import { SessionTimer } from "@/components/session/SessionTimer";
 import { useContentHash } from "@/hooks/use-content-hash";
 import { useCountdown } from "@/hooks/use-countdown";
 import { useCurrentTeacher } from "@/hooks/use-current-teacher";
-import { useSession } from "@/hooks/use-current-student";
 import { retryLessonPipeline, runLessonPipeline } from "@/lib/ai/lesson-pipeline";
 import { formatNumber } from "@/lib/format";
 import { getSession } from "@/lib/auth";
@@ -160,8 +159,6 @@ function SessionMode() {
   const group = groups.find((g) => g.id === groupId)!;
   const navigate = useNavigate();
   const teacher = useCurrentTeacher();
-  const session = useSession();
-  const teacherIdentifier = session?.identifier ?? teacher?.user_id ?? teacher?.id ?? "";
 
   useEffect(() => {
     if (
@@ -546,7 +543,6 @@ function SessionMode() {
                 <GroupResourcesPanel
                   groupId={group.id}
                   teacherId={group.teacher_id}
-                  teacherIdentifier={teacherIdentifier}
                   variant="session"
                 />
 

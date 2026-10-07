@@ -91,24 +91,24 @@ function ClientCard({ client, onChanged }: { client: ClientListItem; onChanged: 
     (typeof window !== "undefined" ? window.location.origin : "") +
     (client.slug ? `/login/${client.slug}` : "");
 
-  async function withIdentifier(action: (identifier: string) => Promise<void>) {
-    const identifier = getSession()?.identifier;
-    if (!identifier) {
+  // السيرفر بيستمد الهوية من التوكن الموقَّع تلقائياً (requirePlatformAdmin) في كل نداء
+  // تحت — مفيش حاجة نبني/نبعت identifier بعد كده، هذا فحص محلي سريع فقط للعرض.
+  function requireLocalSession(): boolean {
+    if (!getSession()) {
       toast.error("جلسة غير صالحة — سجّل الدخول من جديد");
-      return;
+      return false;
     }
-    await action(identifier);
+    return true;
   }
 
   async function toggleStatus() {
+    if (!requireLocalSession()) return;
     setBusy("toggle");
     try {
-      await withIdentifier(async (identifier) => {
-        const nextStatus = client.status === "active" ? "paused" : "active";
-        await setClientStatus({ data: { identifier, centerId: client.id, status: nextStatus } });
-        toast.success(nextStatus === "paused" ? "تم إيقاف العميل" : "تم تشغيل العميل من جديد");
-        onChanged();
-      });
+      const nextStatus = client.status === "active" ? "paused" : "active";
+      await setClientStatus({ data: { centerId: client.id, status: nextStatus } });
+      toast.success(nextStatus === "paused" ? "تم إيقاف العميل" : "تم تشغيل العميل من جديد");
+      onChanged();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "حدث خطأ أثناء تغيير الحالة");
     } finally {
@@ -117,13 +117,12 @@ function ClientCard({ client, onChanged }: { client: ClientListItem; onChanged: 
   }
 
   async function extend(unit: "month" | "year") {
+    if (!requireLocalSession()) return;
     setBusy(unit === "month" ? "extend-month" : "extend-year");
     try {
-      await withIdentifier(async (identifier) => {
-        await extendClientSubscription({ data: { identifier, centerId: client.id, unit } });
-        toast.success(unit === "month" ? "تم تمديد الاشتراك شهراً" : "تم تمديد الاشتراك سنة");
-        onChanged();
-      });
+      await extendClientSubscription({ data: { centerId: client.id, unit } });
+      toast.success(unit === "month" ? "تم تمديد الاشتراك شهراً" : "تم تمديد الاشتراك سنة");
+      onChanged();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "حدث خطأ أثناء التمديد");
     } finally {
@@ -136,14 +135,13 @@ function ClientCard({ client, onChanged }: { client: ClientListItem; onChanged: 
       setCredentials(null);
       return;
     }
+    if (!requireLocalSession()) return;
     setLoadingCreds(true);
     try {
-      await withIdentifier(async (identifier) => {
-        const result = await fetchClientOwnerCredentials({
-          data: { identifier, centerId: client.id },
-        });
-        setCredentials(result);
+      const result = await fetchClientOwnerCredentials({
+        data: { centerId: client.id },
       });
+      setCredentials(result);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "تعذّر جلب بيانات الدخول");
     } finally {
@@ -152,24 +150,23 @@ function ClientCard({ client, onChanged }: { client: ClientListItem; onChanged: 
   }
 
   async function exportClient() {
+    if (!requireLocalSession()) return;
     setBusy("export");
     try {
-      await withIdentifier(async (identifier) => {
-        const data = await fetchCenterDataForAdmin({
-          data: { identifier, targetCenterId: client.id },
-        });
-        downloadCenterExcel({
-          centerName: client.name,
-          students: data.students as never,
-          teachers: data.teachers as never,
-          groups: data.groups as never,
-          attendanceRecords: data.attendanceRecords as never,
-          payments: data.payments as never,
-          quizResults: data.quizResults as never,
-          homeworkTasks: data.homeworkTasks as never,
-        });
-        toast.success("تم تحضير ملف تصدير العميل");
+      const data = await fetchCenterDataForAdmin({
+        data: { targetCenterId: client.id },
       });
+      downloadCenterExcel({
+        centerName: client.name,
+        students: data.students as never,
+        teachers: data.teachers as never,
+        groups: data.groups as never,
+        attendanceRecords: data.attendanceRecords as never,
+        payments: data.payments as never,
+        quizResults: data.quizResults as never,
+        homeworkTasks: data.homeworkTasks as never,
+      });
+      toast.success("تم تحضير ملف تصدير العميل");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "حدث خطأ أثناء التصدير");
     } finally {
@@ -339,10 +336,9 @@ function ClientsPage() {
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "paused">("all");
 
   async function refresh() {
-    const identifier = getSession()?.identifier;
-    if (!identifier) return;
+    if (!getSession()) return;
     try {
-      const rows = await fetchClients({ data: { identifier } });
+      const rows = await fetchClients();
       setClients(rows);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "حدث خطأ أثناء تحميل بيانات العملاء");

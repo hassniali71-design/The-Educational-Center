@@ -1,13 +1,16 @@
 import { createServerFn } from "@tanstack/react-start";
 
-import { getSupabaseAdmin, resolveCenterId } from "@/lib/supabase-server";
+import { requirePlatformAdmin } from "@/lib/session.server";
+import { getSupabaseAdmin } from "@/lib/supabase-server";
 
 /**
- * PLATFORM_CLIENT_MANAGEMENT_SPEC.md — server functions behind `/platform/clients`. Same
- * platform-only gate as `createCenter`/`fetchCenterDataForAdmin` in auth-functions.server.ts /
- * data-functions.server.ts: the caller's own session identifier must resolve to the reserved
- * "platform" center, never a real client's. Kept in a separate file from those two because this
- * is a distinct concern (managing existing clients vs. onboarding a new one / exporting one).
+ * PLATFORM_CLIENT_MANAGEMENT_SPEC.md — server functions behind `/platform/clients`.
+ *
+ * SECURITY FIX (2026-10): every function here used to call `assertPlatformCaller(identifier)`,
+ * which trusted a plain `identifier` string sent by the browser. They now call
+ * `requirePlatformAdmin()` (src/lib/session.server.ts), which derives the caller's identity
+ * from a signed, server-verified bearer token instead — a client can no longer claim to be
+ * the platform admin by sending an arbitrary string.
  */
 const PLATFORM_CENTER_ID = "platform";
 
@@ -28,18 +31,10 @@ export interface ClientListItem extends ClientCenterRow {
   lastActivityAt: string | null;
 }
 
-async function assertPlatformCaller(identifier: string) {
-  const callerCenterId = await resolveCenterId(identifier);
-  if (callerCenterId !== PLATFORM_CENTER_ID) {
-    throw new Error("هذا الحساب غير مصرَّح له بإدارة العملاء");
-  }
-}
-
 /** §2 — "كل العملاء": every real client (never the reserved "platform" row itself). */
 export const fetchClients = createServerFn({ method: "GET" })
-  .validator((data: { identifier: string }) => data)
-  .handler(async ({ data }): Promise<ClientListItem[]> => {
-    await assertPlatformCaller(data.identifier);
+  .handler(async (): Promise<ClientListItem[]> => {
+    await requirePlatformAdmin();
     const supabase = getSupabaseAdmin();
 
     const { data: centers, error: centersError } = await supabase
@@ -77,9 +72,9 @@ export const fetchClients = createServerFn({ method: "GET" })
  * rejects logins for it.
  */
 export const setClientStatus = createServerFn({ method: "POST" })
-  .validator((data: { identifier: string; centerId: string; status: "active" | "paused" }) => data)
+  .validator((data: { centerId: string; status: "active" | "paused" }) => data)
   .handler(async ({ data }) => {
-    await assertPlatformCaller(data.identifier);
+    await requirePlatformAdmin();
     if (data.centerId === PLATFORM_CENTER_ID) {
       throw new Error("لا يمكن تغيير حالة حساب إدارة المنصة نفسه");
     }
@@ -96,11 +91,17 @@ export const setClientStatus = createServerFn({ method: "POST" })
  * (صفحة /platform/new-center كانت تعرضها مرة واحدة بس عند الإنشاء ثم تضيع بعد أي
  * refresh). هذه الدالة تسمح لصاحب المنصة بمراجعتها في أي وقت لاحق من /platform/clients
  * بدل الاعتماد على نسخها فوراً وقت الإنشاء.
+ *
+ * SECURITY FIX (2026-10): كلمات السر بقت مشفَّرة (PBKDF2، عمود `password_hash`) ومش قابلة
+ * للاسترجاع كنص صريح بعد أول تسجيل دخول للحساب — ده أثر جانبي **مقصود** لتشفير كلمات
+ * السر، مش قصور في هذه الدالة. `password` هنا هترجع `null` لأي حساب سبق له تسجيل دخول
+ * ناجح واحد بعد التفعيل (ترقّى لـ hash وقتها)؛ تفضل متاحة فقط للحسابات اللي لسه ماسجّلتش
+ * دخول أبداً منذ إنشائها.
  */
 export const fetchClientOwnerCredentials = createServerFn({ method: "POST" })
-  .validator((data: { identifier: string; centerId: string }) => data)
+  .validator((data: { centerId: string }) => data)
   .handler(async ({ data }) => {
-    await assertPlatformCaller(data.identifier);
+    await requirePlatformAdmin();
     const supabase = getSupabaseAdmin();
     const { data: account, error } = await supabase
       .from("accounts")
@@ -115,9 +116,9 @@ export const fetchClientOwnerCredentials = createServerFn({ method: "POST" })
 
 /** §3-2 — adds a month/year on top of the center's *current* `expires_at`, not from `now()`. */
 export const extendClientSubscription = createServerFn({ method: "POST" })
-  .validator((data: { identifier: string; centerId: string; unit: "month" | "year" }) => data)
+  .validator((data: { centerId: string; unit: "month" | "year" }) => data)
   .handler(async ({ data }) => {
-    await assertPlatformCaller(data.identifier);
+    await requirePlatformAdmin();
     const supabase = getSupabaseAdmin();
     const { data: center, error: fetchError } = await supabase
       .from("centers")

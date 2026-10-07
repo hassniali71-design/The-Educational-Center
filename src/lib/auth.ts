@@ -7,6 +7,7 @@ import {
   updateAccountRow,
   verifyOwnerPassword as verifyOwnerPasswordFn,
 } from "@/lib/auth-functions.server";
+import { clearToken, getToken, setToken } from "@/lib/session-client";
 import type { UserRole } from "@/types";
 
 /**
@@ -14,12 +15,20 @@ import type { UserRole } from "@/types";
  *
  * SUPABASE_MIGRATION_SPEC.md §5: same public API as before, now backed by Supabase behind
  * `USE_SUPABASE` (mirrors data-store.ts's flag — flip both together). Accounts themselves
- * moved to the `accounts` table (§2); the `Session` (which role/identifier THIS browser
- * currently believes it's logged in as) stays in localStorage either way — it's just local
- * UI state, not a security boundary. The real boundary is server-side: every server function
- * re-resolves `center_id` from `identifier` itself (src/lib/supabase-server.ts), never trusts
- * the client. No public sign-up: every account is still created by the Owner (or, for a new
- * center itself, by the platform admin — §8).
+ * moved to the `accounts` table (§2).
+ *
+ * SECURITY FIX (2026-10): `Session` (below) is still just local UI display state — which
+ * role/identifier THIS browser currently shows itself as logged in as — but it is no longer
+ * the security boundary pretending to be one. The real boundary is a signed, short-lived
+ * bearer token (src/lib/session.server.ts), kept in `sessionStorage` via session-client.ts
+ * and attached to every server call automatically (src/start.ts's function middleware).
+ * Server functions never again read `identifier`/`center_id` from client input and trust it
+ * — every one of them calls `requireSession()` and derives identity from the token alone.
+ * `identifier` stays on `Session` purely so the UI can keep matching "which row is mine" in
+ * data the server has *already* scoped to the caller's own center (see e.g.
+ * `useCurrentStudent`/`useCurrentTeacher`) — it carries no authority on its own. No public
+ * sign-up: every account is still created by the Owner (or, for a new center itself, by the
+ * platform admin — §8).
  */
 export const USE_SUPABASE = true;
 
@@ -158,9 +167,8 @@ export function seedAccounts(): Account[] {
 
 export async function getAccounts(): Promise<Account[]> {
   if (USE_SUPABASE) {
-    const identifier = getSession()?.identifier;
-    if (!identifier) return [];
-    return (await fetchAccounts({ data: { identifier } })) as Account[];
+    if (!getToken()) return [];
+    return (await fetchAccounts()) as Account[];
   }
   return readAccounts();
 }
@@ -204,6 +212,11 @@ function push(account: Account) {
   writeAccounts([...readAccounts(), account]);
 }
 
+/**
+ * Local, fast-fail UI guard only — "is there a local session at all" — not a security check.
+ * The server's `requireSession()` (reading the signed bearer token, never this) is what
+ * actually authorizes every one of the calls below.
+ */
 function requireIdentifier(): string {
   const identifier = getSession()?.identifier;
   if (!identifier) throw new Error("لازم تسجّل الدخول الأول");
@@ -212,8 +225,9 @@ function requireIdentifier(): string {
 
 export async function createStudent(full_name: string, phone: string): Promise<CreatedCredentials> {
   if (USE_SUPABASE) {
+    requireIdentifier();
     const result = await createAccount({
-      data: { identifier: requireIdentifier(), role: "student", full_name, phone },
+      data: { role: "student", full_name, phone },
     });
     emit();
     return result;
@@ -237,9 +251,9 @@ export async function createTeacher(
   subject_id?: string | null,
 ): Promise<CreatedCredentials> {
   if (USE_SUPABASE) {
+    requireIdentifier();
     const result = await createAccount({
       data: {
-        identifier: requireIdentifier(),
         role: "teacher",
         full_name,
         phone,
@@ -266,8 +280,9 @@ export async function createTeacher(
 
 export async function createStaff(full_name: string, phone: string): Promise<CreatedCredentials> {
   if (USE_SUPABASE) {
+    requireIdentifier();
     const result = await createAccount({
-      data: { identifier: requireIdentifier(), role: "staff", full_name, phone },
+      data: { role: "staff", full_name, phone },
     });
     emit();
     return result;
@@ -289,8 +304,9 @@ export async function createStaff(full_name: string, phone: string): Promise<Cre
 
 export async function createVisitorInvite(): Promise<CreatedCredentials> {
   if (USE_SUPABASE) {
+    requireIdentifier();
     const result = await createAccount({
-      data: { identifier: requireIdentifier(), role: "visitor", full_name: "زائر مدعو" },
+      data: { role: "visitor", full_name: "زائر مدعو" },
     });
     emit();
     return result;
@@ -309,7 +325,8 @@ export async function createVisitorInvite(): Promise<CreatedCredentials> {
 
 export async function deleteAccount(id: string): Promise<void> {
   if (USE_SUPABASE) {
-    await deleteAccountFn({ data: { identifier: requireIdentifier(), accountId: id } });
+    requireIdentifier();
+    await deleteAccountFn({ data: { accountId: id } });
     emit();
     return;
   }
@@ -319,52 +336,44 @@ export async function deleteAccount(id: string): Promise<void> {
 /* ---------------- Session ---------------- */
 
 /**
- * جذر شكوى "بمجرد ما نعمل ريفريش بنرجع نسجل دخول" + "التابات بتتعارض": الجلسة
- * كانت متخزّنة في مفتاح واحد ثابت في `localStorage` — وده **مشترك بين كل
- * تابات نفس المتصفح لنفس الموقع**. المستخدم بيفتح عمداً تابات متعددة (مالك/
- * مدرس/طالب) في نفس المتصفح عشان يتابع الحركة بينهم لحظياً — أي تسجيل دخول
- * في تاب بيكتب فوق نفس المفتاح المشترك، فالتابات التانية بمجرد أي ريفريش
- * بتقرأ الجلسة الجديدة الغلط وتترجّع لصفحة الدخول تلقائياً.
+ * SECURITY FIX (2026-10): session storage moved from `localStorage` (one real-security-
+ * relevant `identifier` string, shared across every tab of the same browser/origin) to
+ * `sessionStorage` (the actual authority — the signed bearer token in session-client.ts —
+ * is `sessionStorage`-only). `sessionStorage` is isolated per tab by the browser itself, with
+ * no manual per-tab key juggling needed, so "owner in one tab, teacher in another, same
+ * browser" keeps working exactly as before — the old `erp.tab_id`/per-tab-localStorage-key
+ * scheme this comment used to describe is gone, it's no longer needed.
  *
- * محاولة أولى بـ`sessionStorage` وحده حلّت تعارض التابات، لكن كشفت مشكلة
- * تانية: `sessionStorage` بيتمسح لو التاب اتقفل (حتى لو المتصفح فضل مفتوح)،
- * وده بيتحس زي "خروج مفاجئ" لأي حد بيقفل التاب بالغلط أو المتصفح بيعيد ترتيب
- * تاباته. الحل النهائي: **هوية ثابتة لكل تاب** (`erp.tab_id`) متخزّنة في
- * `sessionStorage` (فريدة لكل تاب، بتفضل طول عمر التاب)، وتحتها الجلسة الفعلية
- * متخزّنة في `localStorage` **باسم مفتاح مختلف لكل تاب** (`erp.session.v1.<tab
- * id>`). النتيجة: كل تاب معزول تماماً عن التابات التانية (مفتاح مختلف)، وفي
- * نفس الوقت الجلسة بتعيش في localStorage فمش بتتمسح بمجرد أي ريفريش أو حتى لو
- * المتصفح أعاد فتح نفس التاب (Session Restore) — أفضل ما في الاتنين مع بعض.
+ * Trade-off accepted on purpose: `sessionStorage` clears when its tab closes, so closing a
+ * tab now really does end that tab's login (no surviving a closed-then-reopened tab). This
+ * `Session` object itself is still just local display state (role/full_name/identifier, for
+ * the UI) — never trusted by the server; see the file-level comment above.
  */
-function tabId(): string {
-  if (typeof window === "undefined") return "ssr";
-  const KEY = "erp.tab_id";
-  let id = window.sessionStorage.getItem(KEY);
-  if (!id) {
-    id = `tab-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
-    window.sessionStorage.setItem(KEY, id);
-  }
-  return id;
-}
-
-function tabSessionKey(): string {
-  return `${SESSION_KEY}.${tabId()}`;
-}
-
 export function getSession(): Session | null {
   if (typeof window === "undefined") return null;
-  const raw = window.localStorage.getItem(tabSessionKey());
-  if (!raw) return null;
   try {
+    const raw = window.sessionStorage.getItem(SESSION_KEY);
+    if (!raw) return null;
     return JSON.parse(raw) as Session;
   } catch {
     return null;
   }
 }
 
+function writeSession(session: Session | null) {
+  if (typeof window === "undefined") return;
+  try {
+    if (session) window.sessionStorage.setItem(SESSION_KEY, JSON.stringify(session));
+    else window.sessionStorage.removeItem(SESSION_KEY);
+  } catch {
+    /* sessionStorage قد يكون معطّلاً في بيئات خاصة */
+  }
+}
+
 export function signOut() {
   if (typeof window === "undefined") return;
-  window.localStorage.removeItem(tabSessionKey());
+  writeSession(null);
+  clearToken();
   // §0 fix — تنظيف فوري + متزامن لـ data-store cache و hydratedForIdentifier.
   // الـ import الديناميكي كان يترك frame قصير تتسرب فيه بيانات الـ tenant السابق
   // للـ paint، خاصةً مع sessions متعددة في نفس المتصفح. الآن التنظيف متزامن
@@ -402,11 +411,20 @@ export async function signIn({ role, identifier, password }: LoginInput): Promis
   if (USE_SUPABASE) {
     try {
       const result = await signInFn({ data: { role, identifier: id, password } });
-      if (result.ok) {
-        window.localStorage.setItem(tabSessionKey(), JSON.stringify(result.session));
-        emit();
-      }
-      return result;
+      if (!result.ok) return result;
+      // SECURITY FIX (2026-10): the server no longer hands back a "session" object to trust
+      // — it hands back a signed token. `identifier` here is just the login code the user
+      // themselves typed a moment ago (echoed back for display), not a trust claim.
+      const session: Session = {
+        role: result.role,
+        full_name: result.full_name,
+        identifier: id,
+        isPlatformAdmin: result.isPlatformAdmin,
+      };
+      setToken(result.token);
+      writeSession(session);
+      emit();
+      return { ok: true, session };
     } catch (err) {
       // استثناء غير متوقع (شبكة قطعت قبل ما يوصل للسيرفر أصلاً) — كان بيسيب
       // LoginCard.tsx معلّق على "جارٍ الدخول..." للأبد من غير أي رسالة.
@@ -433,7 +451,7 @@ export async function signIn({ role, identifier, password }: LoginInput): Promis
     full_name: role === "parent" ? `ولي أمر ${account.full_name}` : account.full_name,
     identifier: account.identifier,
   };
-  window.localStorage.setItem(tabSessionKey(), JSON.stringify(session));
+  writeSession(session);
   emit();
   return { ok: true, session };
 }
@@ -444,7 +462,8 @@ export async function updateAccount(
   patch: { full_name?: string; identifier?: string; password?: string | null },
 ): Promise<void> {
   if (USE_SUPABASE) {
-    await updateAccountRow({ data: { identifier: requireIdentifier(), accountId: id, patch } });
+    requireIdentifier();
+    await updateAccountRow({ data: { accountId: id, patch } });
     emit();
     return;
   }
@@ -457,9 +476,8 @@ export async function updateAccount(
  */
 export async function verifyOwnerPassword(password: string): Promise<{ ok: boolean; error?: string }> {
   if (USE_SUPABASE) {
-    const identifier = getSession()?.identifier;
-    if (!identifier) return { ok: false, error: "انتهت الجلسة" };
-    return verifyOwnerPasswordFn({ data: { identifier, password } });
+    if (!getToken()) return { ok: false, error: "انتهت الجلسة" };
+    return verifyOwnerPasswordFn({ data: { password } });
   }
   const session = getSession();
   if (!session || session.role !== "owner") return { ok: false, error: "هذا الحساب ليس مالكاً" };

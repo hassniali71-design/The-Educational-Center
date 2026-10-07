@@ -59,8 +59,9 @@ function NewCenterPage() {
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    const identifier = getSession()?.identifier;
-    if (!identifier) {
+    // السيرفر بيستمد الهوية من التوكن الموقَّع تلقائياً (requirePlatformAdmin) — هذا فحص
+    // محلي سريع فقط لعرض رسالة واضحة بدل انتظار رد الشبكة لو الجلسة منتهية.
+    if (!getSession()) {
       toast.error("جلسة غير صالحة — سجّل الدخول من جديد");
       return;
     }
@@ -72,7 +73,6 @@ function NewCenterPage() {
     try {
       const result = await createCenter({
         data: {
-          identifier,
           centerName: centerName.trim(),
           phone: phone.trim(),
           address: address.trim(),
@@ -234,15 +234,14 @@ function ExportCenterTool() {
   const [exporting, setExporting] = useState(false);
 
   async function handleExport() {
-    const identifier = getSession()?.identifier;
-    if (!identifier || !targetCenterId.trim()) {
+    if (!getSession() || !targetCenterId.trim()) {
       toast.error("من فضلك أدخل معرّف العميل (center_id)");
       return;
     }
     setExporting(true);
     try {
       const data = await fetchCenterDataForAdmin({
-        data: { identifier, targetCenterId: targetCenterId.trim() },
+        data: { targetCenterId: targetCenterId.trim() },
       });
       downloadCenterExcel({
         centerName: targetCenterId.trim(),

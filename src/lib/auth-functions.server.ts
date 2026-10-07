@@ -6,13 +6,19 @@ import {
   grades as seedGrades,
   subjects as seedSubjects,
 } from "@/lib/mock-data";
-import { getSupabaseAdmin, resolveCenterId } from "@/lib/supabase-server";
+import { hashPassword, isHashedPassword, verifyPassword } from "@/lib/password.server";
+import { requirePlatformAdmin, requireRole, requireSession, signSessionToken } from "@/lib/session.server";
+import { getSupabaseAdmin } from "@/lib/supabase-server";
 import { TENANT_ACCENT_COLORS } from "@/lib/tenant-colors";
 import type { UserRole } from "@/types";
 
 /**
  * SUPABASE_MIGRATION_SPEC.md §2 — `accounts` mirrors auth.ts's current `Account` shape
  * exactly, just backed by Supabase instead of localStorage now.
+ *
+ * SECURITY FIX (2026-10): added `password_hash` (migration 0038). `password` is kept for the
+ * one-time, login-triggered upgrade path in `signIn` below — new/updated passwords never
+ * write it anymore (see `createAccount`/`updateAccountRow`), only `password_hash`.
  */
 interface AccountRow {
   id: string;
@@ -22,9 +28,41 @@ interface AccountRow {
   phone: string | null;
   identifier: string;
   password: string | null;
+  password_hash?: string | null;
   created_at: string;
   /** PLATFORM_CLIENT_MANAGEMENT_SPEC.md §3-4 — set on every successful signIn (below). */
   last_login_at?: string | null;
+}
+
+/** Columns safe to hand back to any client — never `password` or `password_hash`. */
+export const PUBLIC_ACCOUNT_COLUMNS =
+  "id, center_id, role, full_name, phone, identifier, created_at, last_login_at";
+
+export interface PasswordCheckResult {
+  ok: boolean;
+  /**
+   * Set only when the account was still on the legacy plaintext `password` column and it just
+   * matched — the caller must persist this as `password_hash` and null out `password` right
+   * away (both `signIn` and `verifyOwnerPassword` do this).
+   */
+  upgradeHash?: string;
+}
+
+/**
+ * Pure (no Supabase I/O) password check, shared by `signIn` and `verifyOwnerPassword` — kept
+ * as a standalone export so it can be unit-tested without a database.
+ */
+export async function verifyAccountPassword(
+  account: { password: string | null; password_hash?: string | null },
+  typedPassword: string,
+): Promise<PasswordCheckResult> {
+  if (isHashedPassword(account.password_hash)) {
+    return { ok: await verifyPassword(typedPassword, account.password_hash) };
+  }
+  if (account.password && account.password === typedPassword) {
+    return { ok: true, upgradeHash: await hashPassword(typedPassword) };
+  }
+  return { ok: false };
 }
 
 /** §8's onboarding screen — reserved, not a real client. Seeded once, see supabase/seed/. */
@@ -87,6 +125,12 @@ async function uniqueSlug(centerName: string): Promise<string> {
   throw new Error("تعذّر توليد رابط فريد — حاول مرة أخرى");
 }
 
+/**
+ * SECURITY FIX (2026-10): this is the ONE place a client-supplied `identifier` is still
+ * legitimately used — it's the login code/email being typed in, not a trust claim. Every
+ * other server function derives identity from the signed token `signIn` hands back here,
+ * never from a client-supplied identifier again.
+ */
 export const signIn = createServerFn({ method: "POST" })
   .validator((data: { role: UserRole; identifier: string; password?: string | undefined }) => data)
   .handler(async ({ data }) => {
@@ -142,8 +186,26 @@ export const signIn = createServerFn({ method: "POST" })
     }
 
     if (!account) return { ok: false as const, error: "الكود أو البريد غير صحيح" };
-    if (needsPassword && account.password !== data.password?.trim()) {
-      return { ok: false as const, error: "كلمة السر غير صحيحة" };
+
+    if (needsPassword) {
+      const typedPassword = data.password?.trim() ?? "";
+      const check = await verifyAccountPassword(account, typedPassword);
+      if (!check.ok) {
+        return { ok: false as const, error: "كلمة السر غير صحيحة" };
+      }
+      if (check.upgradeHash) {
+        // SECURITY FIX (2026-10) — legacy plaintext account just matched: upgrade it to a
+        // PBKDF2 hash right now so the plaintext never needs to be compared again.
+        // Best-effort: a failure here must never block a valid login.
+        try {
+          await supabase
+            .from("accounts")
+            .update({ password_hash: check.upgradeHash, password: null })
+            .eq("id", account.id);
+        } catch (err) {
+          console.error("[auth] signIn: تعذّر ترقية كلمة السر لـ hash (الدخول نجح رغم ذلك):", err);
+        }
+      }
     }
 
     /**
@@ -180,35 +242,45 @@ export const signIn = createServerFn({ method: "POST" })
       console.error("[auth] signIn: تعذّر تحديث last_login_at (تجاهل، الدخول ناجح):", err);
     }
 
+    // SECURITY FIX (2026-10): the server is now the only thing that knows `account.id` and
+    // `account.center_id` — the browser gets a signed, 12h-lived token instead, and must send
+    // it back (Authorization header) on every subsequent call. It never gets to assert its
+    // own `center_id` again.
+    const token = await signSessionToken({
+      accountId: account.id,
+      centerId: account.center_id,
+      role: data.role,
+    });
+
     return {
       ok: true as const,
-      session: {
-        role: data.role,
-        full_name: data.role === "parent" ? `ولي أمر ${account.full_name}` : account.full_name,
-        identifier: account.identifier,
-        isPlatformAdmin: account.center_id === PLATFORM_CENTER_ID,
-      },
+      token,
+      full_name: data.role === "parent" ? `ولي أمر ${account.full_name}` : account.full_name,
+      role: data.role,
+      isPlatformAdmin: account.center_id === PLATFORM_CENTER_ID,
     };
   });
 
+/** الدور الوحيد المسموح له يدير حسابات مركزه من "إدارة وصلاحيات الوصول" — نفس القيد الموجود فعلياً في الواجهة (nav/roles.ts) الآن مفروض على السيرفر أيضاً. */
+const ACCOUNT_MANAGEMENT_ROLES: readonly UserRole[] = ["owner"];
+
 export const fetchAccounts = createServerFn({ method: "GET" })
-  .validator((data: { identifier: string }) => data)
-  .handler(async ({ data }) => {
-    const centerId = await resolveCenterId(data.identifier);
+  .handler(async () => {
+    const session = await requireSession();
+    requireRole(session, ACCOUNT_MANAGEMENT_ROLES);
     const supabase = getSupabaseAdmin();
     const { data: rows, error } = await supabase
       .from("accounts")
-      .select("*")
-      .eq("center_id", centerId)
+      .select(PUBLIC_ACCOUNT_COLUMNS)
+      .eq("center_id", session.centerId)
       .order("created_at", { ascending: true });
     if (error) throw new Error(error.message);
-    return (rows ?? []) as AccountRow[];
+    return (rows ?? []) as Omit<AccountRow, "password" | "password_hash">[];
   });
 
 export const createAccount = createServerFn({ method: "POST" })
   .validator(
     (data: {
-      identifier: string; // caller's own session identifier — provisioning is owner/staff-only, enforced by the UI route guard same as today
       role: "student" | "teacher" | "staff" | "visitor";
       full_name: string;
       phone?: string;
@@ -218,7 +290,8 @@ export const createAccount = createServerFn({ method: "POST" })
     }) => data,
   )
   .handler(async ({ data }) => {
-    const centerId = await resolveCenterId(data.identifier);
+    const session = await requireSession();
+    requireRole(session, ACCOUNT_MANAGEMENT_ROLES);
     const supabase = getSupabaseAdmin();
 
     // مرحلة التجربة الحالية: كود دخول مبني على الاسم (PREFIX-XXXX) بدل أرقام عشوائية
@@ -231,15 +304,20 @@ export const createAccount = createServerFn({ method: "POST" })
         ? `VIS-${randAlpha(6)}`
         : await uniqueFriendlyIdentifier(ROLE_PREFIX[data.role], data.full_name);
     const password = needsPassword ? generateSimplePassword() : undefined;
+    // SECURITY FIX (2026-10): only ever store the PBKDF2 hash for new accounts — `password`
+    // stays null from creation onward. The plaintext is still returned once in this
+    // function's result, for the owner to copy and relay to the new user right now.
+    const passwordHash = password ? await hashPassword(password) : null;
 
     const row: AccountRow = {
       id: `acc-${Date.now()}`,
-      center_id: centerId,
+      center_id: session.centerId,
       role: data.role,
       full_name: data.full_name,
       phone: data.phone ?? null,
       identifier: newIdentifier,
-      password: password ?? null,
+      password: null,
+      password_hash: passwordHash,
       created_at: new Date().toISOString(),
     };
 
@@ -255,15 +333,16 @@ export const createAccount = createServerFn({ method: "POST" })
   });
 
 export const deleteAccount = createServerFn({ method: "POST" })
-  .validator((data: { identifier: string; accountId: string }) => data)
+  .validator((data: { accountId: string }) => data)
   .handler(async ({ data }) => {
-    const centerId = await resolveCenterId(data.identifier);
+    const session = await requireSession();
+    requireRole(session, ACCOUNT_MANAGEMENT_ROLES);
     const supabase = getSupabaseAdmin();
     const { error } = await supabase
       .from("accounts")
       .delete()
       .eq("id", data.accountId)
-      .eq("center_id", centerId);
+      .eq("center_id", session.centerId);
     if (error) throw new Error(error.message);
   });
 
@@ -272,12 +351,11 @@ export const deleteAccount = createServerFn({ method: "POST" })
  * accounts/login mechanism instead of a new auth system: the caller must already be logged
  * in as the one seeded account whose `center_id` is the reserved "platform" row (never a
  * real client's center) — see supabase/seed/ for that seeded identifier/password. This is
- * an explicit, server-verified check, not just a hidden route.
+ * an explicit, server-verified check (via the signed session token), not just a hidden route.
  */
 export const createCenter = createServerFn({ method: "POST" })
   .validator(
     (data: {
-      identifier: string; // caller's own session — must resolve to the platform center
       centerName: string;
       phone: string;
       address: string;
@@ -286,10 +364,7 @@ export const createCenter = createServerFn({ method: "POST" })
     }) => data,
   )
   .handler(async ({ data }) => {
-    const callerCenterId = await resolveCenterId(data.identifier);
-    if (callerCenterId !== PLATFORM_CENTER_ID) {
-      throw new Error("هذا الحساب غير مصرَّح له بإضافة عملاء جدد");
-    }
+    await requirePlatformAdmin();
     if (!TENANT_ACCENT_COLORS.some((c) => c.hex === data.accentColor)) {
       throw new Error("لون غير معروف — اختر من القائمة المتاحة");
     }
@@ -319,6 +394,7 @@ export const createCenter = createServerFn({ method: "POST" })
     // مبني من اسم السنتر نفسه (لا يوجد حقل "اسم المالك" منفصل في هذه الشاشة بعد).
     const identifier = await uniqueFriendlyIdentifier(ROLE_PREFIX.owner, data.centerName);
     const password = generateSimplePassword();
+    const passwordHash = await hashPassword(password);
 
     const { error: accountError } = await supabase.from("accounts").insert({
       id: `acc-${Date.now()}`,
@@ -327,7 +403,8 @@ export const createCenter = createServerFn({ method: "POST" })
       full_name: `مالك ${data.centerName}`,
       phone: data.phone,
       identifier,
-      password,
+      password: null,
+      password_hash: passwordHash,
       created_at: new Date().toISOString(),
     });
     if (accountError) throw new Error(accountError.message);
@@ -381,40 +458,72 @@ export const createCenter = createServerFn({ method: "POST" })
 export const updateAccountRow = createServerFn({ method: "POST" })
   .validator(
     (data: {
-      identifier: string;
       accountId: string;
       patch: { full_name?: string; identifier?: string; password?: string | null; phone?: string | null };
     }) => data,
   )
   .handler(async ({ data }) => {
-    const centerId = await resolveCenterId(data.identifier);
+    const session = await requireSession();
+    requireRole(session, ACCOUNT_MANAGEMENT_ROLES);
     const supabase = getSupabaseAdmin();
+
+    // SECURITY FIX (2026-10): a password change writes `password_hash` only — `password`
+    // (plaintext) is actively nulled out so this account can never again be compared in
+    // plaintext, even if it still had a legacy value sitting there.
+    const { password: newPlainPassword, ...rest } = data.patch;
+    const patch: Record<string, unknown> = { ...rest };
+    if (newPlainPassword !== undefined) {
+      patch["password"] = null;
+      patch["password_hash"] = newPlainPassword === null ? null : await hashPassword(newPlainPassword);
+    }
+
     const { error } = await supabase
       .from("accounts")
-      .update(data.patch)
+      .update(patch)
       .eq("id", data.accountId)
-      .eq("center_id", centerId);
+      .eq("center_id", session.centerId);
     if (error) throw new Error(error.message);
   });
 
 /**
  * §0.3 — التحقق من كلمة سر المالك قبل أي عملية حساسة (حذف جذري، حذف الكل).
  * لا نُعيد كلمة السر — فقط true/false.
+ *
+ * SECURITY FIX (2026-10): يتحقق من حساب المستدعي نفسه (من الجلسة الموقَّعة) — لم يعد
+ * يقبل `identifier` من العميل إطلاقاً، فمينفعش حد يتحقق من كلمة سر حساب غير حسابه.
  */
 export const verifyOwnerPassword = createServerFn({ method: "POST" })
-  .validator((data: { identifier: string; password: string }) => data)
+  .validator((data: { password: string }) => data)
   .handler(async ({ data }) => {
+    const session = await requireSession();
+    if (session.role !== "owner") {
+      return { ok: false as const, error: "هذا الحساب ليس مالكاً" };
+    }
     const supabase = getSupabaseAdmin();
     const { data: account } = await supabase
       .from("accounts")
-      .select("password, role")
-      .eq("identifier", data.identifier.trim())
-      .maybeSingle<{ password: string | null; role: UserRole }>();
-    if (!account || account.role !== "owner") {
-      return { ok: false as const, error: "هذا الحساب ليس مالكاً" };
+      .select("id, password, password_hash")
+      .eq("id", session.accountId)
+      .maybeSingle<{ id: string; password: string | null; password_hash: string | null }>();
+    if (!account) {
+      return { ok: false as const, error: "حساب المالك غير موجود" };
     }
-    if ((account.password ?? "").trim() !== data.password.trim()) {
+
+    const typed = data.password.trim();
+    const check = await verifyAccountPassword(account, typed);
+    if (!check.ok) {
       return { ok: false as const, error: "كلمة السر غير صحيحة" };
+    }
+    if (check.upgradeHash) {
+      // ترقية فورية لـ hash — نفس منطق signIn.
+      try {
+        await supabase
+          .from("accounts")
+          .update({ password_hash: check.upgradeHash, password: null })
+          .eq("id", account.id);
+      } catch (err) {
+        console.error("[auth] verifyOwnerPassword: تعذّر ترقية كلمة السر لـ hash:", err);
+      }
     }
     return { ok: true as const };
   });
@@ -424,14 +533,13 @@ export const verifyOwnerPassword = createServerFn({ method: "POST" })
  * (مُكمل لـ /login/$slug إن لم يُحفظ في `cache` بعد.)
  */
 export const fetchMyCenterSlug = createServerFn({ method: "GET" })
-  .validator((data: { identifier: string }) => data)
-  .handler(async ({ data }) => {
-    const centerId = await resolveCenterId(data.identifier);
+  .handler(async () => {
+    const session = await requireSession();
     const supabase = getSupabaseAdmin();
     const { data: row } = await supabase
       .from("centers")
       .select("slug, name, accent_color")
-      .eq("id", centerId)
+      .eq("id", session.centerId)
       .maybeSingle<{ slug: string | null; name: string; accent_color: string | null }>();
     return row ?? null;
   });

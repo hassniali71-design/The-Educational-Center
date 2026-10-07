@@ -9,6 +9,7 @@
     "postbuild": "bun run scripts/fix-cloudflare-chunks.ts",
     "build:dev": "vite build --mode development",
     "preview": "vite preview",
+    "test": "bun test",
     "lint": "eslint .",
     "format": "prettier --write ."
   },

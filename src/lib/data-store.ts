@@ -134,21 +134,25 @@ function reportSyncFailure(table: string, err: unknown) {
  */
 type PlainRow = Record<string, unknown>;
 
+/**
+ * SECURITY FIX (2026-10): none of these pass `identifier` to the server anymore — the server
+ * derives `center_id`/`role` itself from the signed bearer token (see src/lib/session.server.ts
+ * and src/start.ts's function middleware, which attaches it automatically). `currentIdentifier()`
+ * is kept purely as a cheap local "is anyone logged in" guard, same as before.
+ */
 function syncInsert(table: TableName, row: object) {
   if (!USE_SUPABASE) return;
-  const identifier = currentIdentifier();
-  if (!identifier) return;
-  void insertRow({ data: { identifier, table, row: row as PlainRow } }).catch((err) =>
+  if (!currentIdentifier()) return;
+  void insertRow({ data: { table, row: row as PlainRow } }).catch((err) =>
     reportSyncFailure(table, err),
   );
 }
 
 function syncBulkInsert(table: TableName, rows: object[]) {
   if (!USE_SUPABASE || rows.length === 0) return;
-  const identifier = currentIdentifier();
-  if (!identifier) return;
+  if (!currentIdentifier()) return;
   for (const row of rows) {
-    void insertRow({ data: { identifier, table, row: row as PlainRow } }).catch((err) =>
+    void insertRow({ data: { table, row: row as PlainRow } }).catch((err) =>
       reportSyncFailure(table, err),
     );
   }
@@ -156,36 +160,32 @@ function syncBulkInsert(table: TableName, rows: object[]) {
 
 function syncUpdate(table: TableName, id: string, patch: object, idColumn?: string) {
   if (!USE_SUPABASE) return;
-  const identifier = currentIdentifier();
-  if (!identifier) return;
+  if (!currentIdentifier()) return;
   void updateRow({
-    data: { identifier, table, id, patch: patch as PlainRow, ...(idColumn ? { idColumn } : {}) },
+    data: { table, id, patch: patch as PlainRow, ...(idColumn ? { idColumn } : {}) },
   }).catch((err) => reportSyncFailure(table, err));
 }
 
 function syncUpsert(table: TableName, row: object, onConflict = "id") {
   if (!USE_SUPABASE) return;
-  const identifier = currentIdentifier();
-  if (!identifier) return;
-  void upsertRow({ data: { identifier, table, row: row as PlainRow, onConflict } }).catch((err) =>
+  if (!currentIdentifier()) return;
+  void upsertRow({ data: { table, row: row as PlainRow, onConflict } }).catch((err) =>
     reportSyncFailure(table, err),
   );
 }
 
 function syncDeleteIds(table: TableName, ids: string[], idColumn?: string) {
   if (!USE_SUPABASE || ids.length === 0) return;
-  const identifier = currentIdentifier();
-  if (!identifier) return;
+  if (!currentIdentifier()) return;
   void deleteRows({
-    data: { identifier, table, ids, ...(idColumn ? { idColumn } : {}) },
+    data: { table, ids, ...(idColumn ? { idColumn } : {}) },
   }).catch((err) => reportSyncFailure(table, err));
 }
 
 function syncDeleteAll(table: TableName) {
   if (!USE_SUPABASE) return;
-  const identifier = currentIdentifier();
-  if (!identifier) return;
-  void deleteRows({ data: { identifier, table } }).catch((err) => reportSyncFailure(table, err));
+  if (!currentIdentifier()) return;
+  void deleteRows({ data: { table } }).catch((err) => reportSyncFailure(table, err));
 }
 
 /**
@@ -533,7 +533,7 @@ function bootstrapFromSupabase() {
   }
 
   hydrating = true;
-  fetchCenterData({ data: { identifier } })
+  fetchCenterData()
     .then((result) => {
       const {
         centerId: _centerId,
@@ -579,7 +579,7 @@ function silentRefresh() {
   // بعد الهيدريشن الأول بس.
   if (!identifier || hydrating || hydratedForIdentifier !== identifier) return;
   if (Date.now() - lastLocalMutationAt < SILENT_REFRESH_QUIET_MS) return;
-  fetchCenterData({ data: { identifier } })
+  fetchCenterData()
     .then((result) => {
       // المستخدم ممكن يكون سجّل خروج أو غيّر الهوية أثناء انتظار الرد.
       if (currentIdentifier() !== identifier) return;
@@ -2360,14 +2360,13 @@ export function createLessonPlan(input: CreateLessonPlanInput): LessonPlan {
   // sync إلى Supabase (لو متاح)
   void import("@/lib/data-functions.server").then(async (m) => {
     if (!USE_SUPABASE) return;
-    const id = getSession()?.identifier;
-    if (!id) return;
+    if (!getSession()?.identifier) return;
     const state = readState();
     const created = state.lessonPlans.find((p) => p.id === row.id);
     if (!created) return;
     try {
       await m.upsertLessonPlanRow({
-        data: { identifier: id, row: created },
+        data: { row: created },
       });
     } catch (err) {
       reportSyncFailure("lesson_plans", err);
@@ -2398,12 +2397,11 @@ export function markLessonPlanState(
   }));
   void import("@/lib/data-functions.server").then(async (m) => {
     if (!USE_SUPABASE) return;
-    const id = getSession()?.identifier;
-    if (!id) return;
+    if (!getSession()?.identifier) return;
     const updated = readState().lessonPlans.find((p) => p.id === planId);
     if (!updated) return;
     try {
-      await m.upsertLessonPlanRow({ data: { identifier: id, row: updated } });
+      await m.upsertLessonPlanRow({ data: { row: updated } });
     } catch (err) {
       reportSyncFailure("lesson_plans", err);
     }
@@ -2423,12 +2421,11 @@ export function updateLessonPlan(
   }));
   void import("@/lib/data-functions.server").then(async (m) => {
     if (!USE_SUPABASE) return;
-    const id = getSession()?.identifier;
-    if (!id) return;
+    if (!getSession()?.identifier) return;
     const updated = readState().lessonPlans.find((p) => p.id === planId);
     if (!updated) return;
     try {
-      await m.upsertLessonPlanRow({ data: { identifier: id, row: updated } });
+      await m.upsertLessonPlanRow({ data: { row: updated } });
     } catch (err) {
       reportSyncFailure("lesson_plans", err);
     }
@@ -2442,10 +2439,9 @@ export function deleteLessonPlan(planId: string): void {
   }));
   void import("@/lib/data-functions.server").then(async (m) => {
     if (!USE_SUPABASE) return;
-    const id = getSession()?.identifier;
-    if (!id) return;
+    if (!getSession()?.identifier) return;
     try {
-      await m.deleteLessonPlanRow({ data: { identifier: id, id: planId } });
+      await m.deleteLessonPlanRow({ data: { id: planId } });
     } catch (err) {
       reportSyncFailure("lesson_plans", err);
     }
@@ -2494,10 +2490,9 @@ export function createPlatformTeacherNote(
   }));
   void import("@/lib/data-functions.server").then(async (m) => {
     if (!USE_SUPABASE) return;
-    const id = getSession()?.identifier;
-    if (!id) return;
+    if (!getSession()?.identifier) return;
     try {
-      await m.upsertPlatformTeacherNote({ data: { identifier: id, row } });
+      await m.upsertPlatformTeacherNote({ data: { row } });
     } catch (err) {
       reportSyncFailure("platform_teacher_notes", err);
     }
@@ -2512,10 +2507,9 @@ export function deletePlatformTeacherNote(noteId: string): void {
   }));
   void import("@/lib/data-functions.server").then(async (m) => {
     if (!USE_SUPABASE) return;
-    const id = getSession()?.identifier;
-    if (!id) return;
+    if (!getSession()?.identifier) return;
     try {
-      await m.deletePlatformTeacherNote({ data: { identifier: id, id: noteId } });
+      await m.deletePlatformTeacherNote({ data: { id: noteId } });
     } catch (err) {
       reportSyncFailure("platform_teacher_notes", err);
     }
@@ -4615,13 +4609,12 @@ export async function createGroup(
   const identifier = currentIdentifier();
   if (USE_SUPABASE && identifier) {
     await insertRow({
-      data: { identifier, table: "groups", row: group as unknown as PlainRow },
+      data: { table: "groups", row: group as unknown as PlainRow },
     });
     const results = await Promise.allSettled(
       [...primaryIds].map((sid) =>
         updateRow({
           data: {
-            identifier,
             table: "students",
             id: sid,
             patch: { group_id: newId, group_name: group.name },
@@ -4636,7 +4629,7 @@ export async function createGroup(
       // صف المجموعة اتسجَّل فعلاً لكن ربط طالب أو أكتر فشل — نمسح صف المجموعة
       // تاني (مش هينفع نسيبها مجموعة فاضية "شبح") عشان المحاولة التالية تبدأ
       // من جديد بحالة نظيفة ومتسقة.
-      await deleteRows({ data: { identifier, table: "groups", ids: [newId] } }).catch(() => {});
+      await deleteRows({ data: { table: "groups", ids: [newId] } }).catch(() => {});
       throw failed.reason instanceof Error
         ? failed.reason
         : new Error("فشل ربط بعض الطلاب بالمجموعة على الخادم");

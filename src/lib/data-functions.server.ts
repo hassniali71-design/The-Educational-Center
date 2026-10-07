@@ -1,6 +1,12 @@
 import { createServerFn } from "@tanstack/react-start";
 
-import { getSupabaseAdmin, readSupabaseEnv, resolveCenterId } from "@/lib/supabase-server";
+import {
+  requirePlatformAdmin,
+  requireRole,
+  requireSession,
+  type SessionPayload,
+} from "@/lib/session.server";
+import { getSupabaseAdmin, readSupabaseEnv } from "@/lib/supabase-server";
 
 /**
  * SUPABASE_MIGRATION_SPEC.md §5 — one generic CRUD layer instead of ~40 bespoke server
@@ -10,8 +16,9 @@ import { getSupabaseAdmin, readSupabaseEnv, resolveCenterId } from "@/lib/supaba
  * see CLAUDE.md §5), so a table name + a plain row object is enough; no per-entity mapping.
  *
  * Every one of these tables has a `center_id` column per §1, so `.eq("center_id", centerId)`
- * uniformly scopes every read/update/delete — `centerId` is resolved server-side from the
- * caller's `identifier` (see resolveCenterId), never trusted from client input.
+ * uniformly scopes every read/update/delete — `centerId` comes from `requireSession()`
+ * (src/lib/session.server.ts), resolved server-side from the caller's signed bearer token,
+ * never trusted from client input.
  */
 const TABLES = [
   "students",
@@ -70,6 +77,34 @@ export type TableName = (typeof TABLES)[number];
 function assertAllowedTable(table: string): asserts table is TableName {
   if (!(TABLES as readonly string[]).includes(table)) {
     throw new Error(`جدول غير مسموح به: ${table}`);
+  }
+}
+
+/**
+ * SECURITY FIX (2026-10): "الدوال الحساسة (... الماليات) تتحقق من الـ role من الجلسة" —
+ * these tables carry money, payroll, pricing, or permission data. Any write through the
+ * generic CRUD layer below additionally requires role owner/staff, on top of the baseline
+ * `requireSession()` every table already gets. Every other table only needs a valid session
+ * (any authenticated role), unchanged from today's actual behavior.
+ */
+const SENSITIVE_TABLES: ReadonlySet<TableName> = new Set([
+  "payments",
+  "expenses",
+  "payroll_records",
+  "safe_handovers",
+  "center_finance_settings",
+  "subject_prices",
+  "booklet_sales",
+  "paper_credits",
+  "paper_transactions",
+  "staff_permissions",
+]);
+
+const SENSITIVE_TABLE_ROLES = ["owner", "staff"] as const;
+
+function requireWriteAccess(session: SessionPayload, table: TableName): void {
+  if (SENSITIVE_TABLES.has(table)) {
+    requireRole(session, SENSITIVE_TABLE_ROLES);
   }
 }
 
@@ -315,10 +350,9 @@ async function fetchAllTablesForCenter(centerId: string) {
 }
 
 export const fetchCenterData = createServerFn({ method: "GET", strict: { output: false } })
-  .validator((data: { identifier: string }) => data)
-  .handler(async ({ data }) => {
-    const centerId = await resolveCenterId(data.identifier);
-    return fetchAllTablesForCenter(centerId);
+  .handler(async () => {
+    const session = await requireSession();
+    return fetchAllTablesForCenter(session.centerId);
   });
 
 /**
@@ -355,12 +389,9 @@ export const fetchCenterBySlug = createServerFn({ method: "GET" })
  * restoring the whole database. Same platform-only check as `createCenter`.
  */
 export const fetchCenterDataForAdmin = createServerFn({ method: "POST", strict: { output: false } })
-  .validator((data: { identifier: string; targetCenterId: string }) => data)
+  .validator((data: { targetCenterId: string }) => data)
   .handler(async ({ data }) => {
-    const callerCenterId = await resolveCenterId(data.identifier);
-    if (callerCenterId !== "platform") {
-      throw new Error("هذا الحساب غير مصرَّح له بتصدير بيانات عملاء آخرين");
-    }
+    await requirePlatformAdmin();
     return fetchAllTablesForCenter(data.targetCenterId);
   });
 
@@ -391,12 +422,13 @@ async function withColumnFallback(
 }
 
 export const insertRow = createServerFn({ method: "POST" })
-  .validator((data: { identifier: string; table: TableName; row: Record<string, unknown> }) => data)
+  .validator((data: { table: TableName; row: Record<string, unknown> }) => data)
   .handler(async ({ data }) => {
     assertAllowedTable(data.table);
-    const centerId = await resolveCenterId(data.identifier);
+    const session = await requireSession();
+    requireWriteAccess(session, data.table);
     const supabase = getSupabaseAdmin();
-    await withColumnFallback({ ...data.row, center_id: centerId }, async (row) => {
+    await withColumnFallback({ ...data.row, center_id: session.centerId }, async (row) => {
       const { error } = await supabase.from(data.table).insert(row);
       return { error };
     });
@@ -405,7 +437,6 @@ export const insertRow = createServerFn({ method: "POST" })
 export const updateRow = createServerFn({ method: "POST" })
   .validator(
     (data: {
-      identifier: string;
       table: TableName;
       idColumn?: string;
       id: string;
@@ -414,7 +445,8 @@ export const updateRow = createServerFn({ method: "POST" })
   )
   .handler(async ({ data }) => {
     assertAllowedTable(data.table);
-    const centerId = await resolveCenterId(data.identifier);
+    const session = await requireSession();
+    requireWriteAccess(session, data.table);
     const supabase = getSupabaseAdmin();
     const idColumn = data.idColumn ?? "id";
     // The center_id filter is what makes this safe: a caller can only ever touch rows that
@@ -425,7 +457,7 @@ export const updateRow = createServerFn({ method: "POST" })
         .from(data.table)
         .update(patch)
         .eq(idColumn, data.id)
-        .eq("center_id", centerId);
+        .eq("center_id", session.centerId);
       return { error };
     });
   });
@@ -433,7 +465,6 @@ export const updateRow = createServerFn({ method: "POST" })
 export const upsertRow = createServerFn({ method: "POST" })
   .validator(
     (data: {
-      identifier: string;
       table: TableName;
       row: Record<string, unknown>;
       onConflict: string;
@@ -441,9 +472,10 @@ export const upsertRow = createServerFn({ method: "POST" })
   )
   .handler(async ({ data }) => {
     assertAllowedTable(data.table);
-    const centerId = await resolveCenterId(data.identifier);
+    const session = await requireSession();
+    requireWriteAccess(session, data.table);
     const supabase = getSupabaseAdmin();
-    await withColumnFallback({ ...data.row, center_id: centerId }, async (row) => {
+    await withColumnFallback({ ...data.row, center_id: session.centerId }, async (row) => {
       const { error } = await supabase
         .from(data.table)
         .upsert(row, { onConflict: data.onConflict });
@@ -452,14 +484,13 @@ export const upsertRow = createServerFn({ method: "POST" })
   });
 
 export const deleteRows = createServerFn({ method: "POST" })
-  .validator(
-    (data: { identifier: string; table: TableName; idColumn?: string; ids?: string[] }) => data,
-  )
+  .validator((data: { table: TableName; idColumn?: string; ids?: string[] }) => data)
   .handler(async ({ data }) => {
     assertAllowedTable(data.table);
-    const centerId = await resolveCenterId(data.identifier);
+    const session = await requireSession();
+    requireWriteAccess(session, data.table);
     const supabase = getSupabaseAdmin();
-    let query = supabase.from(data.table).delete().eq("center_id", centerId);
+    let query = supabase.from(data.table).delete().eq("center_id", session.centerId);
     if (data.ids && data.ids.length > 0) {
       query = query.in(data.idColumn ?? "id", data.ids);
     }
@@ -471,14 +502,14 @@ export const deleteRows = createServerFn({ method: "POST" })
 
 /** جلب خطط الدروس لمدرس معيّن في مركزه الحالي. */
 export const fetchLessonPlans = createServerFn({ method: "GET", strict: { output: false } })
-  .validator((data: { identifier: string; teacherId: string }) => data)
+  .validator((data: { teacherId: string }) => data)
   .handler(async ({ data }) => {
-    const centerId = await resolveCenterId(data.identifier);
+    const session = await requireSession();
     const supabase = getSupabaseAdmin();
     const { data: rows, error } = await supabase
       .from("lesson_plans")
       .select("*")
-      .eq("center_id", centerId)
+      .eq("center_id", session.centerId)
       .eq("teacher_id", data.teacherId)
       .order("created_at", { ascending: false });
     if (error) throw new Error(error.message);
@@ -489,7 +520,6 @@ export const fetchLessonPlans = createServerFn({ method: "GET", strict: { output
 export const upsertLessonPlanRow = createServerFn({ method: "POST" })
   .validator(
     (data: {
-      identifier: string;
       row: {
         id: string;
         center_id: string;
@@ -508,9 +538,9 @@ export const upsertLessonPlanRow = createServerFn({ method: "POST" })
     }) => data,
   )
   .handler(async ({ data }) => {
-    const centerId = await resolveCenterId(data.identifier);
+    const session = await requireSession();
     const supabase = getSupabaseAdmin();
-    const row = { ...data.row, center_id: centerId };
+    const row = { ...data.row, center_id: session.centerId };
     const { error } = await supabase
       .from("lesson_plans")
       .upsert(row, { onConflict: "id" });
@@ -520,23 +550,28 @@ export const upsertLessonPlanRow = createServerFn({ method: "POST" })
 
 /** حذف خطة درس. */
 export const deleteLessonPlanRow = createServerFn({ method: "POST" })
-  .validator((data: { identifier: string; id: string }) => data)
+  .validator((data: { id: string }) => data)
   .handler(async ({ data }) => {
-    const centerId = await resolveCenterId(data.identifier);
+    const session = await requireSession();
     const supabase = getSupabaseAdmin();
     const { error } = await supabase
       .from("lesson_plans")
       .delete()
-      .eq("center_id", centerId)
+      .eq("center_id", session.centerId)
       .eq("id", data.id);
     if (error) throw new Error(error.message);
     return { ok: true };
   });
 
-/** جلب رسائل مدير المنصة لمادة معيّنة — **بدون فلتر center_id** (عبر كل المراكز). */
+/**
+ * جلب رسائل مدير المنصة لمادة معيّنة — **بدون فلتر center_id** (عبر كل المراكز) بالتصميم.
+ * أي مستخدم مسجَّل دخوله (مدرس في أي مركز) يقدر يقرأها — ده المقصود. SECURITY FIX (2026-10):
+ * كانت بتقبل أي `identifier` بلا تحقق فعلي؛ دلوقتي محتاجة جلسة موقَّعة سليمة على الأقل.
+ */
 export const fetchPlatformTeacherNotes = createServerFn({ method: "GET", strict: { output: false } })
-  .validator((data: { identifier: string; subjectId: string }) => data)
+  .validator((data: { subjectId: string }) => data)
   .handler(async ({ data }) => {
+    await requireSession();
     const supabase = getSupabaseAdmin();
     const { data: rows, error } = await supabase
       .from("platform_teacher_notes")
@@ -547,11 +582,10 @@ export const fetchPlatformTeacherNotes = createServerFn({ method: "GET", strict:
     return rows ?? [];
   });
 
-/** upsert رسالة مدير المنصة. */
+/** upsert رسالة مدير المنصة — مدير المنصة فقط (SECURITY FIX 2026-10: requirePlatformAdmin). */
 export const upsertPlatformTeacherNote = createServerFn({ method: "POST" })
   .validator(
     (data: {
-      identifier: string;
       row: {
         id: string;
         subject_id: string;
@@ -564,6 +598,7 @@ export const upsertPlatformTeacherNote = createServerFn({ method: "POST" })
     }) => data,
   )
   .handler(async ({ data }) => {
+    await requirePlatformAdmin();
     const supabase = getSupabaseAdmin();
     const { error } = await supabase
       .from("platform_teacher_notes")
@@ -572,18 +607,19 @@ export const upsertPlatformTeacherNote = createServerFn({ method: "POST" })
     return { ok: true };
   });
 
-/** حذف رسالة مدير المنصة. */
+/** حذف رسالة مدير المنصة — مدير المنصة فقط (SECURITY FIX 2026-10: requirePlatformAdmin). */
 export const deletePlatformTeacherNote = createServerFn({ method: "POST" })
-  .validator((data: { identifier: string; id: string }) => data)
+  .validator((data: { id: string }) => data)
   .handler(async ({ data }) => {
+    await requirePlatformAdmin();
     const supabase = getSupabaseAdmin();
-  const { error } = await supabase
-    .from("platform_teacher_notes")
-    .delete()
-    .eq("id", data.id);
-  if (error) throw new Error(error.message);
-  return { ok: true };
-});
+    const { error } = await supabase
+      .from("platform_teacher_notes")
+      .delete()
+      .eq("id", data.id);
+    if (error) throw new Error(error.message);
+    return { ok: true };
+  });
 
 /* ---------------- 0020: groups real source (createGroup / updateGroup / deleteGroup + addStudentToGroup / removeStudentFromGroup) ---------------- */
 
@@ -591,7 +627,6 @@ export const deletePlatformTeacherNote = createServerFn({ method: "POST" })
 export const createGroupRow = createServerFn({ method: "POST" })
   .validator(
     (data: {
-      identifier: string;
       row: {
         id: string;
         center_id: string;
@@ -614,9 +649,9 @@ export const createGroupRow = createServerFn({ method: "POST" })
     }) => data,
   )
   .handler(async ({ data }) => {
-    const centerId = await resolveCenterId(data.identifier);
+    const session = await requireSession();
     const supabase = getSupabaseAdmin();
-    const row = { ...data.row, center_id: centerId };
+    const row = { ...data.row, center_id: session.centerId };
     await withColumnFallback(row, async (r) => {
       const { error } = await supabase.from("groups").insert(r);
       return { error };
@@ -628,20 +663,19 @@ export const createGroupRow = createServerFn({ method: "POST" })
 export const updateGroupRow = createServerFn({ method: "POST" })
   .validator(
     (data: {
-      identifier: string;
       id: string;
       patch: Record<string, unknown>;
     }) => data,
   )
   .handler(async ({ data }) => {
-    const centerId = await resolveCenterId(data.identifier);
+    const session = await requireSession();
     const supabase = getSupabaseAdmin();
     await withColumnFallback(data.patch, async (patch) => {
       const { error } = await supabase
         .from("groups")
         .update(patch)
         .eq("id", data.id)
-        .eq("center_id", centerId);
+        .eq("center_id", session.centerId);
       return { error };
     });
     return { ok: true };
@@ -649,14 +683,14 @@ export const updateGroupRow = createServerFn({ method: "POST" })
 
 /** حذف مجموعة. */
 export const deleteGroupRow = createServerFn({ method: "POST" })
-  .validator((data: { identifier: string; id: string }) => data)
+  .validator((data: { id: string }) => data)
   .handler(async ({ data }) => {
-    const centerId = await resolveCenterId(data.identifier);
+    const session = await requireSession();
     const supabase = getSupabaseAdmin();
     const { error } = await supabase
       .from("groups")
       .delete()
-      .eq("center_id", centerId)
+      .eq("center_id", session.centerId)
       .eq("id", data.id);
     if (error) throw new Error(error.message);
     return { ok: true };
@@ -666,19 +700,18 @@ export const deleteGroupRow = createServerFn({ method: "POST" })
 export const addStudentToGroupRow = createServerFn({ method: "POST" })
   .validator(
     (data: {
-      identifier: string;
       studentId: string;
       groupId: string;
       groupName: string;
     }) => data,
   )
   .handler(async ({ data }) => {
-    const centerId = await resolveCenterId(data.identifier);
+    const session = await requireSession();
     const supabase = getSupabaseAdmin();
     const { error } = await supabase
       .from("students")
       .update({ group_id: data.groupId, group_name: data.groupName })
-      .eq("center_id", centerId)
+      .eq("center_id", session.centerId)
       .eq("id", data.studentId);
     if (error) throw new Error(error.message);
     return { ok: true };
@@ -686,14 +719,14 @@ export const addStudentToGroupRow = createServerFn({ method: "POST" })
 
 /** إزالة طالب من مجموعة (يعود إلى "بدون مجموعة"). */
 export const removeStudentFromGroupRow = createServerFn({ method: "POST" })
-  .validator((data: { identifier: string; studentId: string }) => data)
+  .validator((data: { studentId: string }) => data)
   .handler(async ({ data }) => {
-    const centerId = await resolveCenterId(data.identifier);
+    const session = await requireSession();
     const supabase = getSupabaseAdmin();
     const { error } = await supabase
       .from("students")
       .update({ group_id: null, group_name: "بدون مجموعة" })
-      .eq("center_id", centerId)
+      .eq("center_id", session.centerId)
       .eq("id", data.studentId);
     if (error) throw new Error(error.message);
     return { ok: true };

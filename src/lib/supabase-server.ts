@@ -76,23 +76,10 @@ export function getSupabaseAdmin(): AnySupabaseClient {
 }
 
 /**
- * §3 — every server function verifies `center_id` itself instead of trusting a
- * client-supplied value: the browser sends `identifier` (auth.ts's `Session.identifier`,
- * already unique per account — `accounts.identifier unique` in 0001_centers_and_accounts.sql),
- * and this looks up that account's real `center_id` server-side via the service-role
- * client. There is no real Supabase Auth yet (§7, deferred on purpose), so `identifier`
- * is the interim "session" anchor — a client could only spoof it by guessing another
- * center's real identifier string, which is the accepted tradeoff §0/§7 already document.
+ * SECURITY FIX (2026-10): `resolveCenterId(identifier)` used to live here — it trusted a
+ * plain `identifier` string sent by the browser to resolve `center_id`, with no signature
+ * or password check behind it on a per-request basis. Anyone could edit that string in
+ * devtools/localStorage and read or write another center's data. It has been removed.
+ * Every server function must now call `requireSession()` (src/lib/session.server.ts)
+ * instead, which derives `center_id`/`role` from a signed, short-lived bearer token.
  */
-export async function resolveCenterId(identifier: string): Promise<string> {
-  const supabase = getSupabaseAdmin();
-  const { data, error } = await supabase
-    .from("accounts")
-    .select("center_id")
-    .eq("identifier", identifier)
-    .single();
-  if (error || !data) {
-    throw new Error("جلسة غير صالحة — سجّل الدخول من جديد.");
-  }
-  return data.center_id as string;
-}

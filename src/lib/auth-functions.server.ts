@@ -16,9 +16,15 @@ import type { UserRole } from "@/types";
  * SUPABASE_MIGRATION_SPEC.md §2 — `accounts` mirrors auth.ts's current `Account` shape
  * exactly, just backed by Supabase instead of localStorage now.
  *
- * SECURITY FIX (2026-10): added `password_hash` (migration 0038). `password` is kept for the
- * one-time, login-triggered upgrade path in `signIn` below — new/updated passwords never
- * write it anymore (see `createAccount`/`updateAccountRow`), only `password_hash`.
+ * SECURITY FIX (2026-10): added `password_hash` (migration 0038). `password` is left
+ * **untouched on purpose, temporarily** for every account, including ones just upgraded by
+ * `signIn`/`verifyOwnerPassword`/`updateAccountRow` — a one-week rollback-safety window
+ * (requested explicitly), so the old plaintext-only code keeps working if we ever need to
+ * revert to it during that window. It is NEVER returned by any server function below
+ * regardless (see `PUBLIC_ACCOUNT_COLUMNS` and `fetchClientOwnerCredentials` in
+ * platform-functions.server.ts), and every comparison already prefers `password_hash`
+ * whenever it's set, so the stale column has zero effect on behavior. Migration 0039 (not
+ * run yet) empties it once the window closes.
  */
 interface AccountRow {
   id: string;
@@ -42,8 +48,9 @@ export interface PasswordCheckResult {
   ok: boolean;
   /**
    * Set only when the account was still on the legacy plaintext `password` column and it just
-   * matched — the caller must persist this as `password_hash` and null out `password` right
-   * away (both `signIn` and `verifyOwnerPassword` do this).
+   * matched — the caller must persist this as `password_hash` (both `signIn` and
+   * `verifyOwnerPassword` do this). `password` itself is deliberately left as-is for now (see
+   * the file-level comment above) — not nulled out here.
    */
   upgradeHash?: string;
 }
@@ -195,12 +202,17 @@ export const signIn = createServerFn({ method: "POST" })
       }
       if (check.upgradeHash) {
         // SECURITY FIX (2026-10) — legacy plaintext account just matched: upgrade it to a
-        // PBKDF2 hash right now so the plaintext never needs to be compared again.
-        // Best-effort: a failure here must never block a valid login.
+        // PBKDF2 hash right now so the plaintext never needs to be compared again. The
+        // comparison itself already prefers `password_hash` whenever it's set (see
+        // `verifyAccountPassword`), so `password` being left in place changes nothing going
+        // forward — it's kept untouched **on purpose, temporarily** (rollback safety window;
+        // see migration 0039, applied separately once that window closes) and is never
+        // returned by any server function regardless. Best-effort: a failure here must never
+        // block a valid login.
         try {
           await supabase
             .from("accounts")
-            .update({ password_hash: check.upgradeHash, password: null })
+            .update({ password_hash: check.upgradeHash })
             .eq("id", account.id);
         } catch (err) {
           console.error("[auth] signIn: تعذّر ترقية كلمة السر لـ hash (الدخول نجح رغم ذلك):", err);
@@ -467,13 +479,15 @@ export const updateAccountRow = createServerFn({ method: "POST" })
     requireRole(session, ACCOUNT_MANAGEMENT_ROLES);
     const supabase = getSupabaseAdmin();
 
-    // SECURITY FIX (2026-10): a password change writes `password_hash` only — `password`
-    // (plaintext) is actively nulled out so this account can never again be compared in
-    // plaintext, even if it still had a legacy value sitting there.
+    // SECURITY FIX (2026-10): a password change writes `password_hash` only — the comparison
+    // in `verifyAccountPassword` already prefers it over the legacy `password` column
+    // whenever it's set, so a stale `password` left behind is never consulted again. It is
+    // deliberately NOT nulled out right now (temporary rollback-safety window — see migration
+    // 0039, run separately once that window closes) and is never returned by any server
+    // function regardless of whether it's stale or current.
     const { password: newPlainPassword, ...rest } = data.patch;
     const patch: Record<string, unknown> = { ...rest };
     if (newPlainPassword !== undefined) {
-      patch["password"] = null;
       patch["password_hash"] = newPlainPassword === null ? null : await hashPassword(newPlainPassword);
     }
 
@@ -515,11 +529,13 @@ export const verifyOwnerPassword = createServerFn({ method: "POST" })
       return { ok: false as const, error: "كلمة السر غير صحيحة" };
     }
     if (check.upgradeHash) {
-      // ترقية فورية لـ hash — نفس منطق signIn.
+      // ترقية فورية لـ hash — نفس منطق signIn. `password` يتسيب كما هو عمداً مؤقتاً (أسبوع
+      // أمان قبل تشغيل migration 0039) — مش بيأثر على أي مقارنة لاحقة لأن password_hash
+      // دايماً له الأولوية.
       try {
         await supabase
           .from("accounts")
-          .update({ password_hash: check.upgradeHash, password: null })
+          .update({ password_hash: check.upgradeHash })
           .eq("id", account.id);
       } catch (err) {
         console.error("[auth] verifyOwnerPassword: تعذّر ترقية كلمة السر لـ hash:", err);

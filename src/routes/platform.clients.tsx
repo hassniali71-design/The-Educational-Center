@@ -81,10 +81,9 @@ function ClientCard({ client, onChanged }: { client: ClientListItem; onChanged: 
   const [busy, setBusy] = useState<"toggle" | "extend-month" | "extend-year" | "export" | null>(
     null,
   );
-  const [credentials, setCredentials] = useState<{
-    identifier: string;
-    password: string | null;
-  } | null>(null);
+  // SECURITY FIX (2026-10): كلمة السر مابترجعش من السيرفر إطلاقاً بعد اليوم — الكود
+  // (identifier) بس، للمراجعة. كلمة السر الصريحة تظهر مرة واحدة فقط لحظة الإنشاء.
+  const [credentials, setCredentials] = useState<{ identifier: string } | null>(null);
   const [loadingCreds, setLoadingCreds] = useState(false);
   const progress = subscriptionProgress(client.joined_at, client.expires_at);
   const loginLink =
@@ -262,16 +261,9 @@ function ClientCard({ client, onChanged }: { client: ClientListItem; onChanged: 
             <span className="text-muted-foreground">الكود</span>
             <span className="font-mono text-foreground">{credentials.identifier}</span>
           </button>
-          {credentials.password ? (
-            <button
-              type="button"
-              onClick={() => credentials.password && copy(credentials.password)}
-              className="flex w-full items-center justify-between rounded-lg bg-background px-3 py-2 text-sm font-extrabold hover:bg-muted"
-            >
-              <span className="text-muted-foreground">كلمة السر</span>
-              <span className="font-mono text-foreground">{credentials.password}</span>
-            </button>
-          ) : null}
+          <p className="px-1 text-xs font-bold text-muted-foreground">
+            كلمة السر مُشفَّرة ولا تظهر هنا — تظهر مرة واحدة فقط لحظة إنشاء العميل.
+          </p>
         </div>
       ) : null}
 

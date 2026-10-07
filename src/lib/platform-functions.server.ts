@@ -87,16 +87,16 @@ export const setClientStatus = createServerFn({ method: "POST" })
   });
 
 /**
- * بيانات دخول المالك محفوظة أصلاً وباستمرار في `accounts` منذ لحظة `createCenter`
- * (صفحة /platform/new-center كانت تعرضها مرة واحدة بس عند الإنشاء ثم تضيع بعد أي
- * refresh). هذه الدالة تسمح لصاحب المنصة بمراجعتها في أي وقت لاحق من /platform/clients
- * بدل الاعتماد على نسخها فوراً وقت الإنشاء.
+ * بيانات دخول المالك (الكود/identifier) محفوظة أصلاً وباستمرار في `accounts` منذ لحظة
+ * `createCenter` (صفحة /platform/new-center كانت تعرضها مرة واحدة بس عند الإنشاء ثم تضيع
+ * بعد أي refresh). هذه الدالة تسمح لصاحب المنصة بمراجعة الكود في أي وقت لاحق من
+ * /platform/clients بدل الاعتماد على نسخه فوراً وقت الإنشاء.
  *
- * SECURITY FIX (2026-10): كلمات السر بقت مشفَّرة (PBKDF2، عمود `password_hash`) ومش قابلة
- * للاسترجاع كنص صريح بعد أول تسجيل دخول للحساب — ده أثر جانبي **مقصود** لتشفير كلمات
- * السر، مش قصور في هذه الدالة. `password` هنا هترجع `null` لأي حساب سبق له تسجيل دخول
- * ناجح واحد بعد التفعيل (ترقّى لـ hash وقتها)؛ تفضل متاحة فقط للحسابات اللي لسه ماسجّلتش
- * دخول أبداً منذ إنشائها.
+ * SECURITY FIX (2026-10): **لا ترجع كلمة السر إطلاقاً بعد اليوم** — ولا حتى من عمود
+ * `password` القديم (طلب صريح: "ميرجعش العمود القديم في أي دالة"، بغضّ النظر عن كونه
+ * مشفَّر أو لسه نص صريح لهذا الحساب بعينه). كلمة السر الصريحة تظهر **مرة واحدة فقط** لحظة
+ * `createCenter` نفسها (نتيجة الإنشاء)، ومن بعدها غير قابلة للاسترجاع من أي مكان — نفس مبدأ
+ * تشفير الباسوردات، مش قصور في هذه الدالة.
  */
 export const fetchClientOwnerCredentials = createServerFn({ method: "POST" })
   .validator((data: { centerId: string }) => data)
@@ -105,10 +105,10 @@ export const fetchClientOwnerCredentials = createServerFn({ method: "POST" })
     const supabase = getSupabaseAdmin();
     const { data: account, error } = await supabase
       .from("accounts")
-      .select("identifier, password")
+      .select("identifier")
       .eq("center_id", data.centerId)
       .eq("role", "owner")
-      .maybeSingle<{ identifier: string; password: string | null }>();
+      .maybeSingle<{ identifier: string }>();
     if (error) throw new Error(error.message);
     if (!account) throw new Error("لا يوجد حساب مالك لهذا العميل");
     return account;

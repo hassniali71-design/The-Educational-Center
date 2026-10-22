@@ -955,6 +955,198 @@ export function setStudentSubjectFees(studentId: string, fees: Record<string, nu
   syncUpdate("students", studentId, { subject_fees: fees, balance_due: balanceDue });
 }
 
+export interface UpdateStudentBasicInfoInput {
+  fullName?: string;
+  guardianName?: string;
+  guardianPhone?: string;
+  /** اسم الصف (نص) — لا يوجد grade_id على Student، فقط اسم. */
+  grade?: string;
+}
+
+/**
+ * تعديل البيانات الأساسية للطالب (الاسم/ولي الأمر ووسيلة التواصل/الصف) من بطاقة الطالب.
+ * لا يغيّر `code` (هوية الطالب) ولا `id` إطلاقاً — مجرد تحديث لنفس السجل، لا إنشاء طالب جديد.
+ * لا يلمس المواد/المجموعات/المالية/الحضور — تعديلات منفصلة عمداً (addSubjectToStudent/
+ * removeSubjectFromStudent/addStudentToGroup...).
+ *
+ * لو الصف اتغيّر والطالب لسه في مجموعة أساسية لصف مختلف، بترجع تحذير (مش بتاخد قرار
+ * تلقائي بنقل/فصل المجموعة — ده قرار منتج يحتاج تأكيد من المالك، مش تخمين).
+ */
+export function updateStudentBasicInfo(
+  studentId: string,
+  patch: UpdateStudentBasicInfoInput,
+): { ok: boolean; gradeMismatchWarning?: boolean } {
+  const state = getData();
+  const student = state.students.find((s) => s.id === studentId);
+  if (!student) return { ok: false };
+
+  const next: Partial<Student> = {};
+  if (patch.fullName !== undefined && patch.fullName.trim()) next.full_name = patch.fullName.trim();
+  if (patch.guardianName !== undefined) next.guardian_name = patch.guardianName.trim();
+  if (patch.guardianPhone !== undefined) next.guardian_phone = patch.guardianPhone.trim();
+  if (patch.grade !== undefined && patch.grade.trim()) next.grade = patch.grade.trim();
+
+  if (Object.keys(next).length === 0) return { ok: true };
+
+  update((s) => ({
+    ...s,
+    students: s.students.map((st) => (st.id === studentId ? { ...st, ...next } : st)),
+  }));
+  syncUpdate("students", studentId, next);
+
+  const currentGroup = student.group_id ? state.groups.find((g) => g.id === student.group_id) : undefined;
+  const gradeMismatchWarning = !!next.grade && !!currentGroup && currentGroup.grade !== next.grade;
+
+  logActivity("student_updated", `تعديل بيانات ${next.full_name ?? student.full_name}`, student.code);
+  return { ok: true, gradeMismatchWarning };
+}
+
+/**
+ * إضافة مادة جديدة لتسجيل الطالب — مع ربطها اختيارياً بمجموعة مباشرة.
+ *
+ * السعر يُضاف للمستحق الحالي زيادةً (balance_due += fee) **لا يُعاد حسابه من الصفر** —
+ * لو استخدمنا sumSubjectFees هنا كان هيمحي أثر أي مدفوعات سابقة على مواد أخرى (نفس
+ * الملاحظة المسجّلة على setStudentSubjectFees). هذا يحافظ على القاعدة الصريحة: "لا تغيّر
+ * المدفوعات السابقة تلقائيًا عند تعديل المواد".
+ */
+export function addSubjectToStudent(
+  studentId: string,
+  subjectId: string,
+  fee: number,
+  groupId?: string | null,
+): { ok: boolean; reason?: string } {
+  const state = getData();
+  const student = state.students.find((s) => s.id === studentId);
+  if (!student) return { ok: false, reason: "الطالب غير موجود" };
+  if (student.subject_ids.includes(subjectId)) {
+    return { ok: false, reason: "الطالب مسجَّل في هذه المادة بالفعل" };
+  }
+
+  const nextSubjectIds = [...student.subject_ids, subjectId];
+  const nextFees = { ...(student.subject_fees ?? {}), [subjectId]: fee };
+  const nextBalanceDue = student.balance_due + fee;
+  const nextStatus: Student["payment_status"] = nextBalanceDue > 0 ? "pending" : student.payment_status;
+
+  update((s) => ({
+    ...s,
+    students: s.students.map((st) =>
+      st.id === studentId
+        ? {
+            ...st,
+            subject_ids: nextSubjectIds,
+            subject_fees: nextFees,
+            balance_due: nextBalanceDue,
+            payment_status: nextStatus,
+          }
+        : st,
+    ),
+  }));
+  syncUpdate("students", studentId, {
+    subject_ids: nextSubjectIds,
+    subject_fees: nextFees,
+    balance_due: nextBalanceDue,
+    payment_status: nextStatus,
+  });
+
+  let groupWarning: string | undefined;
+  if (groupId) {
+    const group = state.groups.find((g) => g.id === groupId);
+    if (group && group.subject_id === subjectId) {
+      const groupResult = student.group_id
+        ? enrollStudentInAdditionalGroup(studentId, groupId)
+        : addStudentToGroup(studentId, groupId);
+      // المادة اتسجّلت بنجاح في كل الحالات — فشل الربط بمجموعة (سعة مكتملة مثلاً) بيرجع
+      // تحذير بس، من غير ما يلغي تسجيل المادة نفسها (تقدر تربطها بمجموعة لاحقاً).
+      if (!groupResult.ok) groupWarning = groupResult.reason;
+    }
+  }
+
+  logActivity("student_subject_added", `إضافة مادة لـ ${student.full_name}`, student.code, null, fee);
+  return groupWarning ? { ok: true, reason: groupWarning } : { ok: true };
+}
+
+/**
+ * إزالة مادة من تسجيل الطالب — إلغاء تسجيل مستقبلي بس، مش حذف تاريخ.
+ *
+ * يفصل أي مجموعة (أساسية أو إضافية) مرتبطة بهذه المادة بعينها، ويقلّل المستحق
+ * *المستقبلي* بقيمة سعر هذه المادة فقط (بدون النزول تحت صفر). **لا يلمس**: المدفوعات
+ * المسجَّلة من قبل، سجلات الحضور، درجات التقييم — كل دي أرشيف تاريخي يفضل كما هو.
+ */
+export function removeSubjectFromStudent(
+  studentId: string,
+  subjectId: string,
+): { ok: boolean; reason?: string } {
+  const state = getData();
+  const student = state.students.find((s) => s.id === studentId);
+  if (!student) return { ok: false, reason: "الطالب غير موجود" };
+  if (!student.subject_ids.includes(subjectId)) {
+    return { ok: false, reason: "الطالب غير مسجَّل في هذه المادة" };
+  }
+
+  const fee = Number(student.subject_fees?.[subjectId] ?? 0);
+  const nextSubjectIds = student.subject_ids.filter((id) => id !== subjectId);
+  const nextFees = { ...(student.subject_fees ?? {}) };
+  delete nextFees[subjectId];
+  const nextBalanceDue = Math.max(0, student.balance_due - fee);
+  const nextStatus: Student["payment_status"] = nextBalanceDue > 0 ? "pending" : "paid";
+
+  const primaryGroup = student.group_id
+    ? state.groups.find((g) => g.id === student.group_id)
+    : undefined;
+  const removePrimary = !!primaryGroup && primaryGroup.subject_id === subjectId;
+  const extraEnrollmentsToRemove = state.studentGroupEnrollments.filter((e) => {
+    if (e.student_id !== studentId) return false;
+    const g = state.groups.find((gr) => gr.id === e.group_id);
+    return g?.subject_id === subjectId;
+  });
+  const extraGroupIds = new Set(extraEnrollmentsToRemove.map((e) => e.group_id));
+
+  update((s) => ({
+    ...s,
+    students: s.students.map((st) =>
+      st.id === studentId
+        ? {
+            ...st,
+            subject_ids: nextSubjectIds,
+            subject_fees: nextFees,
+            balance_due: nextBalanceDue,
+            payment_status: nextStatus,
+            ...(removePrimary ? { group_id: null, group_name: "بدون مجموعة" } : {}),
+          }
+        : st,
+    ),
+    groups: s.groups.map((g) => {
+      if (removePrimary && primaryGroup && g.id === primaryGroup.id) {
+        return { ...g, enrolled: Math.max(0, g.enrolled - 1) };
+      }
+      if (extraGroupIds.has(g.id)) return { ...g, enrolled: Math.max(0, g.enrolled - 1) };
+      return g;
+    }),
+    studentGroupEnrollments: s.studentGroupEnrollments.filter(
+      (e) => !extraEnrollmentsToRemove.some((rm) => rm.id === e.id),
+    ),
+  }));
+
+  syncUpdate("students", studentId, {
+    subject_ids: nextSubjectIds,
+    subject_fees: nextFees,
+    balance_due: nextBalanceDue,
+    payment_status: nextStatus,
+    ...(removePrimary ? { group_id: null, group_name: "بدون مجموعة" } : {}),
+  });
+  if (removePrimary && primaryGroup) {
+    syncUpdate("groups", primaryGroup.id, { enrolled: Math.max(0, primaryGroup.enrolled - 1) });
+  }
+  extraEnrollmentsToRemove.forEach((e) => {
+    syncDeleteIds("student_group_enrollments", [e.id]);
+    const g = state.groups.find((gr) => gr.id === e.group_id);
+    if (g) syncUpdate("groups", g.id, { enrolled: Math.max(0, g.enrolled - 1) });
+  });
+
+  logActivity("student_subject_removed", `إزالة مادة من ${student.full_name}`, student.code);
+  return { ok: true };
+}
+
 export interface CreateTeacherInput {
   /** The login identifier from `auth.ts`'s `createTeacher` (e.g. "TCH-4073") — must match so `resolveCurrentTeacher` finds this record. */
   userId: string;

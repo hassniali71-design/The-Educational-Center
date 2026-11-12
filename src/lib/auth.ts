@@ -458,13 +458,16 @@ export async function signIn({ role, identifier, password }: LoginInput): Promis
 }
 
 /**
- * دخول بكود 6 أرقام لوحده (مدرس/طالب/موظف/زائر، وولي الأمر بكود ابنه) — الدور بييجي
- * من السيرفر، مش من اختيار المستخدم.
+ * دخول بالكود لوحده (من غير كلمة سر) — موظف 10…، طالب 20…، مدرس 30…، زائر 40…،
+ * وولي الأمر بكود ابنه. السيرفر بيتأكد إن الكود من نفس النوع المختار.
  */
-export async function signInWithCode(code: string, asParent = false): Promise<LoginResult> {
-  if (!code.trim()) return { ok: false, error: "اكتب كود الدخول — 6 أرقام" };
+export async function signInWithCode(
+  role: "staff" | "student" | "teacher" | "visitor" | "parent",
+  code: string,
+): Promise<LoginResult> {
+  if (!code.trim()) return { ok: false, error: "اكتب كود الدخول" };
   try {
-    const result = await signInWithCodeFn({ data: { code, asParent } });
+    const result = await signInWithCodeFn({ data: { role, code } });
     if (!result.ok) return result;
     const session: Session = {
       role: result.role,

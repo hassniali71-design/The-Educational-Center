@@ -2,9 +2,11 @@ import { createServerFn } from "@tanstack/react-start";
 
 import {
   buildNameCode,
-  generateNumericLoginCode,
+  type CodeLoginRole,
+  generateRoleLoginCode,
   generateSimplePassword,
-  normalizeNumericLoginCode,
+  normalizeRoleLoginCode,
+  ROLE_CODE_PREFIX,
   ROLE_PREFIX,
 } from "@/lib/identifier-gen";
 import {
@@ -106,11 +108,11 @@ async function uniqueFriendlyIdentifier(prefix: string, fullName: string): Promi
   throw new Error("تعذّر توليد كود فريد — حاول مرة أخرى");
 }
 
-/** كود دخول رقمي 6 أرقام فريد عالمياً (accounts.identifier unique عبر كل المراكز). */
-async function uniqueNumericLoginCode(): Promise<string> {
+/** كود دخول رقمي (بادئة الدور + 6 أرقام) فريد عالمياً (accounts.identifier unique عبر كل المراكز). */
+async function uniqueRoleLoginCode(role: CodeLoginRole): Promise<string> {
   const supabase = getSupabaseAdmin();
   for (let attempt = 0; attempt < 30; attempt += 1) {
-    const candidate = generateNumericLoginCode();
+    const candidate = generateRoleLoginCode(role);
     const { data, error } = await supabase
       .from("accounts")
       .select("id")
@@ -290,16 +292,30 @@ export const signIn = createServerFn({ method: "POST" })
   });
 
 /**
- * دخول بالكود الرقمي (6 أرقام) لوحده — للمدرس والطالب والموظف والزائر (وولي الأمر بكود ابنه).
- * مفيش اختيار دور: الدور بييجي من الحساب نفسه. مالك السنتر ومدير المنصة مش بيدخلوا من هنا أبداً.
+ * دخول بالكود الرقمي لوحده (من غير كلمة سر) — المستخدم بيختار نوع حسابه من القايمة ويكتب كوده:
+ * موظف 10xxxxxx، طالب 20xxxxxx، مدرس 30xxxxxx، زائر 40xxxxxx، وولي الأمر بكود ابنه (20…).
+ * البادئة لازم تطابق النوع المختار، والحساب لازم يكون من نفس النوع. مالك السنتر ومدير المنصة
+ * مش بيدخلوا من هنا أبداً (signIn بكلمة سر).
  */
-const CODE_LOGIN_ROLES: readonly UserRole[] = ["student", "teacher", "staff", "visitor"];
+type CodeSignInRole = CodeLoginRole | "parent";
 
 export const signInWithCode = createServerFn({ method: "POST" })
-  .validator((data: { code: string; asParent?: boolean }) => data)
+  .validator((data: { role: CodeSignInRole; code: string }) => data)
   .handler(async ({ data }) => {
-    const code = normalizeNumericLoginCode(String(data.code ?? ""));
-    if (!code) return { ok: false as const, error: "اكتب كود الدخول — 6 أرقام" };
+    const lookupRole: CodeLoginRole | null =
+      data.role === "parent" ? "student" : data.role in ROLE_CODE_PREFIX ? data.role : null;
+    if (!lookupRole) return { ok: false as const, error: "نوع الحساب ده بيدخل بكلمة سر" };
+
+    const code = normalizeRoleLoginCode(String(data.code ?? ""));
+    if (!code) return { ok: false as const, error: "الكود 8 أرقام — اكتبه زي ما هو" };
+    if (!code.startsWith(ROLE_CODE_PREFIX[lookupRole])) {
+      return {
+        ok: false as const,
+        error: `الكود ده مش ${data.role === "parent" ? "كود طالب" : "للنوع اللي اخترته"} — كود ${
+          data.role === "parent" ? "الطالب" : "النوع ده"
+        } بيبدأ بـ ${ROLE_CODE_PREFIX[lookupRole]}`,
+      };
+    }
 
     let supabase: ReturnType<typeof getSupabaseAdmin>;
     try {
@@ -316,7 +332,7 @@ export const signInWithCode = createServerFn({ method: "POST" })
         .from("accounts")
         .select("*")
         .eq("identifier", code)
-        .in("role", CODE_LOGIN_ROLES as UserRole[])
+        .eq("role", lookupRole)
         .maybeSingle<AccountRow>();
       if (error) throw new Error(error.message);
       account = found;
@@ -332,10 +348,7 @@ export const signInWithCode = createServerFn({ method: "POST" })
     if (!account || account.center_id === PLATFORM_CENTER_ID) {
       return { ok: false as const, error: "الكود غير صحيح" };
     }
-    if (data.asParent && account.role !== "student") {
-      return { ok: false as const, error: "ده مش كود طالب — ولي الأمر بيدخل بكود ابنه" };
-    }
-    const role: UserRole = data.asParent ? "parent" : account.role;
+    const role: UserRole = data.role === "parent" ? "parent" : account.role;
 
     try {
       const { data: center } = await supabase
@@ -412,10 +425,10 @@ export const createAccount = createServerFn({ method: "POST" })
     requireRole(session, ACCOUNT_MANAGEMENT_ROLES);
     const supabase = getSupabaseAdmin();
 
-    // طلب صاحب المشروع (12/11/2026): المدرس والطالب والموظف والزائر بيدخلوا بكود
-    // 6 أرقام عشوائي لوحده — من غير يوزر نيم ولا كلمة سر. مالك السنتر بس (createCenter
+    // طلب صاحب المشروع (12/11/2026): المدرس (30) والطالب (20) والموظف (10) والزائر (40)
+    // بيدخلوا بكود = بادئة الدور + 6 أرقام عشوائية — من غير يوزر نيم ولا كلمة سر. مالك السنتر بس (createCenter
     // تحت) هو اللي ليه كود + كلمة سر.
-    const newIdentifier = await uniqueNumericLoginCode();
+    const newIdentifier = await uniqueRoleLoginCode(data.role);
     const password: string | undefined = undefined;
     // SECURITY FIX (2026-10): only ever store the PBKDF2 hash for new accounts — `password`
     // stays null from creation onward. The plaintext is still returned once in this

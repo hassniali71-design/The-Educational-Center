@@ -100,25 +100,34 @@ export function generateSimplePassword(): string {
 }
 
 /**
- * كود دخول من 6 أرقام عشوائية (100000–999999) — طلب صريح من صاحب المشروع (12/11/2026):
- * المدرسين والطلاب والموظفين والزوار بيدخلوا بالرقم ده لوحده، من غير يوزر نيم ولا كلمة سر.
- * مالك السنتر ومدير المنصة مستثنيين (بيفضلوا بكود/إيميل + كلمة سر).
- * crypto.getRandomValues شغال في Cloudflare Workers وفي Node/Bun.
+ * كود الدخول الرقمي — طلب صريح من صاحب المشروع (12/11/2026): رقمين بيحددوا نوع الحساب
+ * (صفحة اليوزر) + 6 أرقام عشوائية بتحدد الشخص نفسه. 8 أرقام إجمالاً، من غير كلمة سر.
+ * ولي الأمر بيدخل بكود ابنه (20…). مالك السنتر ومدير المنصة مستثنيين (كود/إيميل + كلمة سر).
  */
-export function generateNumericLoginCode(): string {
+export const ROLE_CODE_PREFIX = {
+  staff: "10",
+  student: "20",
+  teacher: "30",
+  visitor: "40",
+} as const;
+
+export type CodeLoginRole = keyof typeof ROLE_CODE_PREFIX;
+
+/** crypto.getRandomValues شغال في Cloudflare Workers وفي Node/Bun. */
+export function generateRoleLoginCode(role: CodeLoginRole): string {
   const buf = new Uint32Array(1);
   crypto.getRandomValues(buf);
-  return String(100000 + (buf[0]! % 900000));
+  return ROLE_CODE_PREFIX[role] + String(buf[0]! % 1_000_000).padStart(6, "0");
 }
 
-/** هل النص ده كود دخول رقمي من 6 أرقام؟ (بيقبل أرقام عربية/هندية كمان بعد تحويلها) */
-export function normalizeNumericLoginCode(input: string): string | null {
+/** بيحوّل الأرقام العربية/الفارسية لإنجليزي ويشيل المسافات؛ بيرجّع null لو مش 8 أرقام. */
+export function normalizeRoleLoginCode(input: string): string | null {
   const ascii = input
     .trim()
     .replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x0660))
     .replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x06f0))
-    .replace(/\s+/g, "");
-  return /^\d{6}$/.test(ascii) ? ascii : null;
+    .replace(/[\s-]+/g, "");
+  return /^\d{8}$/.test(ascii) ? ascii : null;
 }
 
 export const ROLE_PREFIX = {

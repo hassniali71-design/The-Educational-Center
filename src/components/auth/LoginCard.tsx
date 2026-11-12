@@ -3,7 +3,7 @@ import { GraduationCap, LogIn, ShieldCheck } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
-import { ROLES } from "@/config/roles";
+import { ROLES, ROLE_ORDER } from "@/config/roles";
 import { getSession, signIn, signInWithCode } from "@/lib/auth";
 import { DEFAULT_TENANT_ACCENT, getTenantPaletteVars } from "@/lib/tenant-colors";
 import type { UserRole } from "@/types";
@@ -12,23 +12,24 @@ const identifierLabel: Record<UserRole, string> = {
   owner: "كود المالك",
   teacher: "كود المدرس",
   staff: "كود الموظف",
-  student: "كود الطالب (Student ID)",
+  student: "كود الطالب",
   parent: "كود الطالب الخاص بابنك",
   visitor: "كود دعوة الزائر",
 };
 
+/** طلب صاحب المشروع (12/11/2026): رقمين لنوع الحساب + 6 أرقام للشخص. ولي الأمر بكود ابنه. */
 const identifierPlaceholder: Record<UserRole, string> = {
   owner: "OWN-AHFO",
-  teacher: "TCH-AHFO",
-  staff: "STF-AHFO",
-  student: "STD-AHFO",
-  parent: "STD-AHFO",
-  visitor: "VIS-ABC123",
+  staff: "10xxxxxx",
+  student: "20xxxxxx",
+  parent: "20xxxxxx",
+  teacher: "30xxxxxx",
+  visitor: "40xxxxxx",
 };
 
+/** مالك السنتر بس اللي بيدخل بكلمة سر — الباقي بالكود لوحده. */
 function needsPassword(role: UserRole) {
-  // مرحلة التجربة الحالية: كل الأدوار محتاجة كلمة سر حتى الطالب/ولي الأمر.
-  return role !== "visitor";
+  return role === "owner";
 }
 
 /**
@@ -42,9 +43,6 @@ export function LoginCard({
   branding?: { name: string; accentColor: string | null } | null;
 }) {
   const navigate = useNavigate();
-  /** "code" = كود 6 أرقام لوحده (الكل ما عدا المالك) — "owner" = كود المالك + كلمة السر. */
-  const [mode, setMode] = useState<"code" | "owner">("code");
-  const [asParent, setAsParent] = useState(false);
   const [role, setRole] = useState<UserRole>("owner");
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
@@ -77,9 +75,9 @@ export function LoginCard({
     setSubmitting(true);
     try {
       const result =
-        mode === "code"
-          ? await signInWithCode(identifier, asParent)
-          : await signIn({ role, identifier, password });
+        role === "owner"
+          ? await signIn({ role, identifier, password })
+          : await signInWithCode(role, identifier);
       if (!result.ok) {
         setError(result.error);
         toast.error(result.error);
@@ -160,42 +158,34 @@ export function LoginCard({
           <form onSubmit={handleSubmit} className="space-y-4 p-6">
             <h1 className="text-2xl font-black text-foreground">تسجيل الدخول</h1>
 
-            {mode === "code" ? (
-              <>
-                <div className="space-y-1.5">
-                  <label htmlFor="code" className="block text-sm font-extrabold text-foreground">
-                    {asParent ? "كود الدخول بتاع ابنك" : "كود الدخول"}
-                  </label>
-                  <input
-                    id="code"
-                    value={identifier}
-                    onChange={(e) => setIdentifier(e.target.value)}
-                    placeholder="123456"
-                    inputMode="numeric"
-                    autoComplete="off"
-                    maxLength={6}
-                    dir="ltr"
-                    className="w-full rounded-xl border-2 border-border bg-background px-4 py-3 text-center font-mono text-2xl font-black tracking-[0.4em] text-foreground outline-none placeholder:font-bold placeholder:text-muted-foreground focus:border-primary"
-                  />
-                  <p className="text-xs font-bold text-muted-foreground">
-                    6 أرقام — المدرس والموظف والطالب بيدخلوا بالكود لوحده
-                  </p>
-                </div>
-                <label className="flex items-center gap-2 text-sm font-extrabold text-foreground">
-                  <input
-                    type="checkbox"
-                    checked={asParent}
-                    onChange={(e) => setAsParent(e.target.checked)}
-                    className="size-4"
-                  />
-                  أنا ولي أمر
-                </label>
-              </>
-            ) : (
-              <div className="space-y-1.5">
-                <label htmlFor="identifier" className="block text-sm font-extrabold text-foreground">
-                  {identifierLabel[role]}
-                </label>
+            <div className="space-y-1.5">
+              <label htmlFor="role" className="block text-sm font-extrabold text-foreground">
+                نوع الحساب
+              </label>
+              <select
+                id="role"
+                value={role}
+                onChange={(e) => {
+                  setRole(e.target.value as UserRole);
+                  setIdentifier("");
+                  setPassword("");
+                  setError(null);
+                }}
+                className="w-full rounded-xl border-2 border-border bg-background px-4 py-3 text-base font-extrabold text-foreground outline-none focus:border-primary"
+              >
+                {ROLE_ORDER.map((r) => (
+                  <option key={r} value={r}>
+                    {ROLES[r].title}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="space-y-1.5">
+              <label htmlFor="identifier" className="block text-sm font-extrabold text-foreground">
+                {identifierLabel[role]}
+              </label>
+              {needsPassword(role) ? (
                 <input
                   id="identifier"
                   value={identifier}
@@ -204,10 +194,22 @@ export function LoginCard({
                   autoComplete="off"
                   className="w-full rounded-xl border-2 border-border bg-background px-4 py-3 text-base font-extrabold text-foreground outline-none placeholder:font-bold placeholder:text-muted-foreground focus:border-primary"
                 />
-              </div>
-            )}
+              ) : (
+                <input
+                  id="identifier"
+                  value={identifier}
+                  onChange={(e) => setIdentifier(e.target.value)}
+                  placeholder={identifierPlaceholder[role]}
+                  inputMode="numeric"
+                  autoComplete="off"
+                  maxLength={8}
+                  dir="ltr"
+                  className="w-full rounded-xl border-2 border-border bg-background px-4 py-3 text-center font-mono text-2xl font-black tracking-[0.3em] text-foreground outline-none placeholder:font-bold placeholder:text-muted-foreground focus:border-primary"
+                />
+              )}
+            </div>
 
-            {mode === "owner" && needsPassword(role) ? (
+            {needsPassword(role) ? (
               <div className="space-y-1.5">
                 <label htmlFor="password" className="block text-sm font-extrabold text-foreground">
                   كلمة السر
@@ -237,20 +239,6 @@ export function LoginCard({
             >
               <LogIn className="size-5" />
               {submitting ? "جارٍ الدخول…" : "دخول"}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                setMode((m) => (m === "code" ? "owner" : "code"));
-                setRole("owner");
-                setIdentifier("");
-                setPassword("");
-                setError(null);
-              }}
-              className="w-full text-center text-sm font-extrabold text-primary underline-offset-4 hover:underline"
-            >
-              {mode === "code" ? "دخول مالك السنتر (كود + كلمة سر)" : "رجوع للدخول بالكود"}
             </button>
 
             <p className="flex items-center justify-center gap-1.5 text-center text-xs font-bold text-muted-foreground">

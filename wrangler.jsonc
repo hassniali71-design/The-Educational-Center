@@ -1,4 +1,7 @@
 {
+  // اسم ثابت للووركر = رابط ثابت واحد (scholariq-center.<حسابك>.workers.dev) — كل نشر
+  // بيروح لنفس الرابط بدل ما يتعمل رابط جديد بالغلط زي الـ٣ روابط القديمة.
+  "name": "scholariq-center",
   // نيترو (بلجن الـTanStack Start الخاص بـCloudflare) بيولّد wrangler.json تلقائي
   // عند كل bun run build، وبيحط compatibility_date = تاريخ جهازك وقت البناء. لو
   // ساعة/تاريخ الجهاز غلط أو قدّام الحقيقي، Cloudflare بيرفض النشر برسالة

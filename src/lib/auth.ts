@@ -4,6 +4,7 @@ import {
   deleteAccount as deleteAccountFn,
   fetchAccounts,
   signIn as signInFn,
+  signInWithCode as signInWithCodeFn,
   updateAccountRow,
   verifyOwnerPassword as verifyOwnerPasswordFn,
 } from "@/lib/auth-functions.server";
@@ -454,6 +455,32 @@ export async function signIn({ role, identifier, password }: LoginInput): Promis
   writeSession(session);
   emit();
   return { ok: true, session };
+}
+
+/**
+ * دخول بكود 6 أرقام لوحده (مدرس/طالب/موظف/زائر، وولي الأمر بكود ابنه) — الدور بييجي
+ * من السيرفر، مش من اختيار المستخدم.
+ */
+export async function signInWithCode(code: string, asParent = false): Promise<LoginResult> {
+  if (!code.trim()) return { ok: false, error: "اكتب كود الدخول — 6 أرقام" };
+  try {
+    const result = await signInWithCodeFn({ data: { code, asParent } });
+    if (!result.ok) return result;
+    const session: Session = {
+      role: result.role,
+      full_name: result.full_name,
+      identifier: result.identifier,
+      isPlatformAdmin: false,
+    };
+    setToken(result.token);
+    writeSession(session);
+    emit();
+    return { ok: true, session };
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    console.error("[auth] signInWithCode: استثناء غير متوقع:", err);
+    return { ok: false, error: `تعذّر الاتصال بالخادم، تأكد من الإنترنت وحاول تاني (${detail})` };
+  }
 }
 
 /** تعديل حساب موجود من واجهة "إدارة وصلاحيات الوصول". */

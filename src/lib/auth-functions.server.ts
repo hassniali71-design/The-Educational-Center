@@ -1,6 +1,12 @@
 import { createServerFn } from "@tanstack/react-start";
 
-import { buildNameCode, generateSimplePassword, ROLE_PREFIX } from "@/lib/identifier-gen";
+import {
+  buildNameCode,
+  generateNumericLoginCode,
+  generateSimplePassword,
+  normalizeNumericLoginCode,
+  ROLE_PREFIX,
+} from "@/lib/identifier-gen";
 import {
   gradeSubjects as seedGradeSubjects,
   grades as seedGrades,
@@ -80,12 +86,6 @@ function rand(len: number) {
   for (let i = 0; i < len; i += 1) out += Math.floor(Math.random() * 10);
   return out;
 }
-function randAlpha(len: number) {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  let out = "";
-  for (let i = 0; i < len; i += 1) out += chars[Math.floor(Math.random() * chars.length)];
-  return out;
-}
 /**
  * كود دخول مبني على الاسم (PREFIX-XXXX) بدل أرقام عشوائية بحتة — طلب صريح
  * لمرحلة التجربة الحالية (انظر تعليق الأمان في identifier-gen.ts). التحقق
@@ -101,6 +101,22 @@ async function uniqueFriendlyIdentifier(prefix: string, fullName: string): Promi
       .select("id")
       .eq("identifier", candidate)
       .maybeSingle();
+    if (!data) return candidate;
+  }
+  throw new Error("تعذّر توليد كود فريد — حاول مرة أخرى");
+}
+
+/** كود دخول رقمي 6 أرقام فريد عالمياً (accounts.identifier unique عبر كل المراكز). */
+async function uniqueNumericLoginCode(): Promise<string> {
+  const supabase = getSupabaseAdmin();
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const candidate = generateNumericLoginCode();
+    const { data, error } = await supabase
+      .from("accounts")
+      .select("id")
+      .eq("identifier", candidate)
+      .maybeSingle();
+    if (error) throw new Error(error.message);
     if (!data) return candidate;
   }
   throw new Error("تعذّر توليد كود فريد — حاول مرة أخرى");
@@ -273,6 +289,96 @@ export const signIn = createServerFn({ method: "POST" })
     };
   });
 
+/**
+ * دخول بالكود الرقمي (6 أرقام) لوحده — للمدرس والطالب والموظف والزائر (وولي الأمر بكود ابنه).
+ * مفيش اختيار دور: الدور بييجي من الحساب نفسه. مالك السنتر ومدير المنصة مش بيدخلوا من هنا أبداً.
+ */
+const CODE_LOGIN_ROLES: readonly UserRole[] = ["student", "teacher", "staff", "visitor"];
+
+export const signInWithCode = createServerFn({ method: "POST" })
+  .validator((data: { code: string; asParent?: boolean }) => data)
+  .handler(async ({ data }) => {
+    const code = normalizeNumericLoginCode(String(data.code ?? ""));
+    if (!code) return { ok: false as const, error: "اكتب كود الدخول — 6 أرقام" };
+
+    let supabase: ReturnType<typeof getSupabaseAdmin>;
+    try {
+      supabase = getSupabaseAdmin();
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      console.error("[auth] signInWithCode: getSupabaseAdmin فشلت:", err);
+      return { ok: false as const, error: detail };
+    }
+
+    let account: AccountRow | null = null;
+    try {
+      const { data: found, error } = await supabase
+        .from("accounts")
+        .select("*")
+        .eq("identifier", code)
+        .in("role", CODE_LOGIN_ROLES as UserRole[])
+        .maybeSingle<AccountRow>();
+      if (error) throw new Error(error.message);
+      account = found;
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      console.error("[auth] signInWithCode: تعذّر البحث عن الحساب:", err);
+      return {
+        ok: false as const,
+        error: `تعذّر الاتصال بالخادم، تأكد من الإنترنت وحاول تاني (${detail})`,
+      };
+    }
+
+    if (!account || account.center_id === PLATFORM_CENTER_ID) {
+      return { ok: false as const, error: "الكود غير صحيح" };
+    }
+    if (data.asParent && account.role !== "student") {
+      return { ok: false as const, error: "ده مش كود طالب — ولي الأمر بيدخل بكود ابنه" };
+    }
+    const role: UserRole = data.asParent ? "parent" : account.role;
+
+    try {
+      const { data: center } = await supabase
+        .from("centers")
+        .select("status")
+        .eq("id", account.center_id)
+        .maybeSingle();
+      if (center?.status === "paused") {
+        return { ok: false as const, error: "الاشتراك متوقف حالياً، تواصل مع الدعم" };
+      }
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      return {
+        ok: false as const,
+        error: `تعذّر الاتصال بالخادم، تأكد من الإنترنت وحاول تاني (${detail})`,
+      };
+    }
+
+    try {
+      await supabase
+        .from("accounts")
+        .update({ last_login_at: new Date().toISOString() })
+        .eq("id", account.id);
+    } catch (err) {
+      console.error("[auth] signInWithCode: تعذّر تحديث last_login_at (تجاهل):", err);
+    }
+
+    const token = await signSessionToken({
+      accountId: account.id,
+      centerId: account.center_id,
+      role,
+    });
+
+    return {
+      ok: true as const,
+      token,
+      full_name: role === "parent" ? `ولي أمر ${account.full_name}` : account.full_name,
+      role,
+      identifier: account.identifier,
+      isPlatformAdmin: false,
+    };
+  });
+
 /** الدور الوحيد المسموح له يدير حسابات مركزه من "إدارة وصلاحيات الوصول" — نفس القيد الموجود فعلياً في الواجهة (nav/roles.ts) الآن مفروض على السيرفر أيضاً. */
 const ACCOUNT_MANAGEMENT_ROLES: readonly UserRole[] = ["owner"];
 
@@ -306,16 +412,11 @@ export const createAccount = createServerFn({ method: "POST" })
     requireRole(session, ACCOUNT_MANAGEMENT_ROLES);
     const supabase = getSupabaseAdmin();
 
-    // مرحلة التجربة الحالية: كود دخول مبني على الاسم (PREFIX-XXXX) بدل أرقام عشوائية
-    // بحتة، وكلمة سر 4 أرقام لكل الأدوار (حتى الطالب) — طلب صريح من صاحب المشروع،
-    // انظر تعليق الأمان في identifier-gen.ts. الزائر (invite بلا كلمة سر) مستثنى.
-    const needsPassword = data.role !== "visitor";
-
-    const newIdentifier =
-      data.role === "visitor"
-        ? `VIS-${randAlpha(6)}`
-        : await uniqueFriendlyIdentifier(ROLE_PREFIX[data.role], data.full_name);
-    const password = needsPassword ? generateSimplePassword() : undefined;
+    // طلب صاحب المشروع (12/11/2026): المدرس والطالب والموظف والزائر بيدخلوا بكود
+    // 6 أرقام عشوائي لوحده — من غير يوزر نيم ولا كلمة سر. مالك السنتر بس (createCenter
+    // تحت) هو اللي ليه كود + كلمة سر.
+    const newIdentifier = await uniqueNumericLoginCode();
+    const password: string | undefined = undefined;
     // SECURITY FIX (2026-10): only ever store the PBKDF2 hash for new accounts — `password`
     // stays null from creation onward. The plaintext is still returned once in this
     // function's result, for the owner to copy and relay to the new user right now.

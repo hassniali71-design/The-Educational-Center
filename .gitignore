@@ -38,3 +38,6 @@ supabase/.temp/
 *.njsproj
 *.sln
 *.sw?
+
+# بيانات طلاب حقيقية (تليفونات أطفال) — ماتترفعش
+sabboura_import/

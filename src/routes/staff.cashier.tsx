@@ -41,7 +41,7 @@ const METHOD_LABELS: Record<PaymentMethod, string> = METHODS.reduce(
     acc[m.key] = m.label;
     return acc;
   },
-  {} as Record<PaymentMethod, string>,
+  { legacy: "مرحّلة من الشيت" } as Record<PaymentMethod, string>,
 );
 
 const planLabels: Record<string, string> = {

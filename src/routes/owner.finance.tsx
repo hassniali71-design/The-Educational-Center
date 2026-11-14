@@ -40,6 +40,7 @@ const METHOD_LABEL: Record<string, string> = {
   cash: "كاش",
   wallet: "محفظة (كاش/إنستاباي/تحويل)",
   instapay: "إنستاباي",
+  legacy: "مرحّلة من الشيت",
 };
 
 function FinancePage() {

@@ -2732,11 +2732,13 @@ export function getPlatformNotesForSubject(
  * معرّف الإغلاق نفسه (`sh-<epoch-ms>`، نفس نمط الـID هنا) بدل الاعتماد عليه.
  */
 export function getCurrentShiftPayments(state: DataState): PaymentRecord[] {
+  // الدفعات المرحّلة من الشيت (method = "legacy") تاريخ قديم، مش تحصيل حصل في أي وردية.
+  const live = state.payments.filter((p) => p.method !== "legacy");
   const lastClosure = state.shiftClosures[0];
-  if (!lastClosure) return state.payments;
+  if (!lastClosure) return live;
   const match = /^sh-(\d+)/.exec(lastClosure.id);
   const sinceMs = match ? Number(match[1]) : 0;
-  return state.payments.filter((p) => {
+  return live.filter((p) => {
     const t = Date.parse(p.created_at);
     return Number.isNaN(t) ? true : t > sinceMs;
   });

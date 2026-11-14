@@ -252,7 +252,8 @@ export interface AttendanceRecord {
   locked?: boolean;
 }
 
-export type PaymentMethod = "cash" | "wallet" | "instapay" | "bank_transfer" | "fawry";
+/** "legacy" = دفعة قديمة مرحّلة من شيت الإكسل وقت نقل البيانات — مش بتدخل في أي وردية. */
+export type PaymentMethod = "cash" | "wallet" | "instapay" | "bank_transfer" | "fawry" | "legacy";
 
 export interface PaymentRecord {
   id: UUID;

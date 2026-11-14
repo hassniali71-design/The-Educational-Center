@@ -41,3 +41,5 @@ supabase/.temp/
 
 # بيانات طلاب حقيقية (تليفونات أطفال) — ماتترفعش
 sabboura_import/
+sabboura_timetable/
+sabboura_timetable.zip
